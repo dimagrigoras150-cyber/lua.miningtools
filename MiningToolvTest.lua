@@ -1,477 +1,1139 @@
-script_name('MiningBTC Helper v3.3 Beta')
-local imgui = require('mimgui')
+script_name('Mining Tools')
+
+require("moonloader")
+local sampev = require("samp.events")
+local imgui = require("imgui")
 local encoding = require('encoding')
-local sampev = require("lib.samp.events")
 local vkeys = require('vkeys')
-encoding.default = 'CP1251'
+encoding.default =('CP1251')
 local u8 = encoding.UTF8
 
--- Настройки и состояние
-local active = false
-local currentStep = 1
-local currentHouse = 0
-local totalBTC = 0 
-local maxHouses = 15
-local targetTime = nil
-local isWaiting = false
-local btcRate = 0
-local gpu_indexes = {1, 2, 3, 4, 7, 8, 9, 10, 13, 14, 15, 16, 19, 20, 21, 22, 25, 26, 27, 28}
-local techPhrases = {
-    u8"Инициализация потоков...",
-    u8"Синхронизация с блокчейном...",
-    u8"Шифрование транзакции...",
-    u8"Обработка BTC-сигнала...",
-    u8"Выгрузка данных в облако...",
-    u8"Проверка видеокарт..."
-}
-local function renderGradientText(text, speed)
-    local speed = speed or 2.0
-    local time = os.clock() * speed
-    local x_offset = 0
+if sampev.INTERFACE.INCOMING_RPCS[61][2]['dialogId'] == 'uint16' then
+    print('normal sampev, patched.')
     
-    for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-        -- Рассчитываем волну для блика
-        local wave = math.sin(time - (x_offset * 0.1)) * 0.5 + 0.5
-        
-        -- Цвета: от насыщенного оранжевого до ярко-желтого
-        -- Это создаст эффект «бегущего блика» по золоту
-        local r = 1.0
-        local g = 0.5 + (wave * 0.4) -- Плавает от 0.5 до 0.9
-        local b = 0.0
-        
-        imgui.TextColored(imgui.ImVec4(r, g, b, 1.0), char)
-        imgui.SameLine(0, 0)
-        x_offset = x_offset + imgui.CalcTextSize(char).x
-    end
-    imgui.NewLine()
+    sampev.INTERFACE.INCOMING_RPCS[61] = {
+        'onShowDialog',
+        {dialogId = 'uint16'},
+        {style = 'uint8'},
+        {title = 'string8'},
+        {button1 = 'string8'},
+        {button2 = 'string8'},
+        {text = 'encodedString4096'},
+        {placeholder = 'string8'}
+    }
+else
+    print('old sampev, skip patch onShowDialog')
 end
-	-- Разделение сумм
-local function formatNumber(n)
-    local s = string.format("%.0f", n)
-    local left, num, right = string.match(s, '^([^%d]*%d)(%d*)(.-)$')
-    return left .. (num:reverse():gsub('(%d%d%d)', '%1.'):reverse()) .. right
-end
--- Переменные MIMGUI
-local showMenu = imgui.new.bool(false)
-local showControlCenter = imgui.new.bool(false)
--- Шрифт
-local imgui_font = nil
-imgui.OnInitialize(function()
-    local config = imgui.ImFontConfig()
-    config.GlyphRanges = imgui.GetIO().Fonts:GetGlyphRangesCyrillic()
-    
-    local fontPath = getWorkingDirectory() .. '\\font\\agora.ttf' 
-    local solidPath = getWorkingDirectory() .. '\\font\\fa-solid-900.ttf' 
-    local brandPath = getWorkingDirectory() .. '\\font\\fa-brands-400.ttf' -- СКАЧАЙ ЭТОТ ФАЙЛ
-
-    if doesFileExist(fontPath) then
-        -- 1. Основной шрифт
-        imgui_font = imgui.GetIO().Fonts:AddFontFromFileTTF(fontPath, 18, config) 
-        
-        -- Конфиг для подмешивания
-        local iconConfig = imgui.ImFontConfig()
-        iconConfig.MergeMode = true
-        iconConfig.PixelSnapH = true
-        -- РАСШИРЕННЫЙ ДИАПАЗОН (чтобы видело всё)
-        local iconRanges = imgui.new.uint16_t[3]({0xf000, 0xffff, 0})
-
-        -- 2. Подмешиваем Solid (иконки системные)
-        if doesFileExist(solidPath) then
-            imgui.GetIO().Fonts:AddFontFromFileTTF(solidPath, 20, iconConfig, iconRanges)
-        end
-
-        -- 3. Подмешиваем Brands (Биткоин, Телеграм и т.д.)
-        if doesFileExist(brandPath) then
-            imgui.GetIO().Fonts:AddFontFromFileTTF(brandPath, 20, iconConfig, iconRanges)
-        end
-        
-        imgui.GetIO().Fonts:Build()
-    end
-end)
-
-imgui.OnFrame(function() return showMenu[0] end, function(player)
-    if imgui_font then imgui.PushFont(imgui_font) end 
-
-    -- [[ 1. ЕДИНЫЙ ЗОЛОТОЙ СТИЛЬ (ПРАВИЛО ДЛЯ ВСЕХ ОКОН) ]]
+  
+do
+    imgui.SwitchContext()
     local style = imgui.GetStyle()
-    style.WindowRounding, style.WindowBorderSize = 12.0, 1.5
-    style.WindowPadding = imgui.ImVec2(20, 20)
+    local colors = style.Colors
+    local clr = imgui.Col
+    local ImVec4 = imgui.ImVec4
+    local ImVec2 = imgui.ImVec2
 
-    -- Открываем "Золотую Броню" (11 стилей)
-    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.06, 0.06, 0.06, 0.96))
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(1.0, 0.7, 0.0, 0.5))
-    imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.1, 0.1, 0.1, 1.0))
-    imgui.PushStyleColor(imgui.Col.TitleBgActive, imgui.ImVec4(0.15, 0.15, 0.15, 1.0))
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.8, 0.0, 1.0)) -- ЗОЛОТОЙ КРЕСТИК ТУТ
-    imgui.PushStyleColor(imgui.Col.ResizeGrip, imgui.ImVec4(0, 0, 0, 0)) -- СКРЫВАЕМ ТРЕУГОЛЬНИК
-    imgui.PushStyleColor(imgui.Col.ResizeGripHovered, imgui.ImVec4(0, 0, 0, 0))
-    imgui.PushStyleColor(imgui.Col.ResizeGripActive, imgui.ImVec4(0, 0, 0, 0))
-    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0)) -- ПРОЗРАЧНЫЙ ФОН КРЕСТИКА
-    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1.0, 0.7, 0.0, 0.2))
-    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1.0, 0.7, 0.0, 0.4))
+    -- Цвета
+    colors[clr.Text]                 = ImVec4(0.90, 0.90, 0.90, 1.00)
+    colors[clr.TextDisabled]         = ImVec4(0.60, 0.60, 0.60, 1.00)
+    colors[clr.WindowBg]             = ImVec4(0.12, 0.14, 0.17, 1.00)
+    colors[clr.ChildWindowBg]        = ImVec4(0.10, 0.14, 0.17, 1.00)
+    colors[clr.PopupBg]              = ImVec4(0.08, 0.08, 0.08, 0.94)
+    colors[clr.Border]               = ImVec4(0.43, 0.43, 0.50, 0.50)
+    colors[clr.BorderShadow]         = ImVec4(0.00, 0.00, 0.00, 0.00)
+    colors[clr.FrameBg]              = ImVec4(0.20, 0.25, 0.29, 1.00)
+    colors[clr.FrameBgHovered]       = ImVec4(0.18, 0.35, 0.58, 0.40)
+    colors[clr.FrameBgActive]        = ImVec4(0.18, 0.35, 0.58, 0.67)
+    colors[clr.TitleBg]              = ImVec4(0.09, 0.12, 0.14, 0.65)
+    colors[clr.TitleBgActive]        = ImVec4(0.18, 0.35, 0.58, 1.00)
+    colors[clr.TitleBgCollapsed]     = ImVec4(0.00, 0.00, 0.00, 0.51)
+    colors[clr.MenuBarBg]            = ImVec4(0.15, 0.18, 0.22, 1.00)
+    colors[clr.ScrollbarBg]          = ImVec4(0.02, 0.02, 0.02, 0.39)
+    colors[clr.ScrollbarGrab]        = ImVec4(0.20, 0.25, 0.29, 1.00)
+    colors[clr.ScrollbarGrabHovered] = ImVec4(0.18, 0.22, 0.25, 1.00)
+    colors[clr.ScrollbarGrabActive]  = ImVec4(0.09, 0.21, 0.31, 1.00)
+    colors[clr.ComboBg]              = ImVec4(0.20, 0.25, 0.29, 1.00)
+    colors[clr.CheckMark]            = ImVec4(0.18, 0.35, 0.58, 1.00)
+    colors[clr.SliderGrab]           = ImVec4(0.18, 0.35, 0.58, 1.00)
+    colors[clr.SliderGrabActive]     = ImVec4(0.22, 0.39, 0.63, 1.00)
+    colors[clr.Button]               = ImVec4(0.20, 0.25, 0.29, 1.00)
+    colors[clr.ButtonHovered]        = ImVec4(0.18, 0.35, 0.58, 1.00)
+    colors[clr.ButtonActive]         = ImVec4(0.22, 0.39, 0.63, 1.00)
+    colors[clr.Header]               = ImVec4(0.18, 0.35, 0.58, 0.55)
+    colors[clr.HeaderHovered]        = ImVec4(0.22, 0.39, 0.63, 0.80)
+    colors[clr.HeaderActive]         = ImVec4(0.22, 0.39, 0.63, 1.00)
+    colors[clr.Separator]            = ImVec4(0.43, 0.43, 0.50, 0.50)
+    colors[clr.SeparatorHovered]     = ImVec4(0.60, 0.60, 0.70, 1.00)
+    colors[clr.SeparatorActive]      = ImVec4(0.70, 0.70, 0.90, 1.00)
+    colors[clr.ResizeGrip]           = ImVec4(0.18, 0.35, 0.58, 0.25)
+    colors[clr.ResizeGripHovered]    = ImVec4(0.18, 0.35, 0.58, 0.67)
+    colors[clr.ResizeGripActive]     = ImVec4(0.18, 0.35, 0.58, 0.95)
+    colors[clr.CloseButton]          = ImVec4(0.20, 0.25, 0.29, 0.60)
+    colors[clr.CloseButtonHovered]   = ImVec4(0.25, 0.30, 0.35, 0.80)
+    colors[clr.CloseButtonActive]    = ImVec4(0.30, 0.35, 0.40, 1.00)       
+    colors[clr.PlotLines]            = ImVec4(0.61, 0.61, 0.61, 1.00)
+    colors[clr.PlotLinesHovered]     = ImVec4(1.00, 0.43, 0.35, 1.00)
+    colors[clr.PlotHistogram]        = ImVec4(0.90, 0.70, 0.00, 1.00)
+    colors[clr.PlotHistogramHovered] = ImVec4(1.00, 0.60, 0.00, 1.00)
+    colors[clr.TextSelectedBg]       = ImVec4(0.18, 0.35, 0.58, 0.35)
+    --colors[clr.ModalWindowDarkening] = ImVec4(0.80, 0.80, 0.80, 0.35)
 
-    -- --- ПЕРВОЕ ОКНО (HELPER) ---
-    imgui.SetNextWindowPos(imgui.ImVec2(20, 350), imgui.Cond.FirstUseEver)
-    imgui.SetNextWindowSize(imgui.ImVec2(400, 0), imgui.Cond.Always)
-    imgui.Begin("Mining Helper v3.3.5 Beta", showMenu, imgui.WindowFlags.NoDecoration)
+    -- Скругления и отступы
+    style.WindowPadding = ImVec2(15, 15)
+    style.WindowRounding = 3.0
+    style.FramePadding = ImVec2(5, 5)
+    style.ItemSpacing = ImVec2(12, 8)
+    style.ItemInnerSpacing = ImVec2(8, 6)
+    style.IndentSpacing = 25.0
+    style.ScrollbarSize = 15.0
+    style.ScrollbarRounding = 15.0
+    style.GrabMinSize = 15.0
+    style.GrabRounding = 7.0
+    style.ChildWindowRounding = 8.0
+    style.FrameRounding = 6.0
+end
+
+do
+    Jcfg = {
+        _version = 2.3,
+        _author = "JF",
+        _telegram = "-----",
+        _help = [[
+            Jcfg - модуль для сохранения и загрузки конфигурационных файлов в Lua, используя формат JSON, с поддержкой конфигурации для ImGui.
+            Важно: модуль должен быть подключен после всех необходимых `require`.
         
-        local startPos, winPos = imgui.GetCursorScreenPos(), imgui.GetWindowPos()
-        local winWidth, draw = imgui.GetWindowWidth(), imgui.GetWindowDrawList()
-        local color, radius = 0xCC00AAFF, 9
+            Использование:
+                - Инициализация модуля:
+                    jcfg = Jcfg()
+        
+                - Сохранение массива в файл:
+                    jcfg.save(table, path)
+                    - table: массив, который нужно сохранить.
+                    - path: путь для сохранения. Если не указан, сохранение будет в moonloader/config/Имя_скрипта/config.json
+        
+                - Загрузка массива из файла:
+                    table = jcfg.load(path)
+                    - table: переменная, в которую будет загружен массив.
+                    - path: путь к файлу для загрузки. Если не указан, будет искать в moonloader/config/Имя_скрипта/config.json
+        
+                - Обновление массива данными из файла:
+                    jcfg.update(table, path)
+                    - table: массив, который нужно обновить данными из файла.
+                    - path: путь к файлу для загрузки. Если не указан, будет искать в moonloader/config/Имя_скрипта/config.json
+        
+                - Настройка массива для использования с ImGui:
+                    imtable = jcfg.setupImgui(table)
+                    - table: массив, который будет преобразован для использования с ImGui.
+                    - imtable: возвращает массив, готовый к использованию с ImGui.
+        
+            Пример использования:
+        
+                -- Инициализация модуля
+                local jcfg = Jcfg()
+        
+                -- Создание конфигурации
+                local cfg = {
+                    params = {'123'},
+                    param = 12
+                }
+        
+                -- Обновление конфигурации данными из файла (если файл существует)
+                jcfg.update(cfg)
+        
+                -- Настройка конфигурации для использования с ImGui
+                local imcfg = jcfg.setupImgui(cfg)
+        
+                -- Сохранение конфигурации в файл
+                jcfg.save(cfg)
+        ]]                      
+    }
 
-        -- ПРАВАЯ ИКОНКА ( i )
-        local iX, iY = winPos.x + 350, winPos.y + 22
-        draw:AddCircle(imgui.ImVec2(iX, iY), radius, color, 20, 1.3)
-        imgui.SetCursorScreenPos(imgui.ImVec2(iX - 3, iY - 7))
-        imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 0.8), "i")
-        imgui.SetCursorScreenPos(imgui.ImVec2(iX - 10, iY - 10))
-        imgui.InvisibleButton("##info_btn", imgui.ImVec2(20, 20))
-        if imgui.IsItemHovered() then
-            imgui.BeginTooltip()
-                imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" ТЕКУЩИЙ КУРС:")
-                local drawT, pT, wT = imgui.GetWindowDrawList(), imgui.GetCursorScreenPos(), imgui.GetWindowWidth()
-                drawT:AddRectFilledMultiColor(imgui.ImVec2(pT.x, pT.y + 2), imgui.ImVec2(pT.x + wT - 10, pT.y + 4), 0xFF00AAFF, 0x0000AAFF, 0x0000AAFF, 0xFF00AAFF)
-                imgui.Dummy(imgui.ImVec2(0, 10))
-                imgui.Text(u8"Bitcoin: ") imgui.SameLine()
-                imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), "$" .. btcRate)
-            imgui.EndTooltip()
+    function Jcfg.__init()
+        local self = {}
+
+        local json = require('dkjson')
+
+        local function makeDirectory(path)
+            assert(type(path) == "string" and path:find('moonloader'), "Path must be a string and include 'moonloader' folder")
+            
+            path = path:gsub("[\\/][^\\/]+%.json$", "")
+
+            if not doesDirectoryExist(path) then
+                if not createDirectory(path) then
+                    return error("Failed to create directory: " .. path)
+                end
+            end
+        end        
+
+        local function setupImguiConfig(table)
+            assert(type(table) == "table", ("bad argument #1 to 'setupImgui' (table expected, got %s)"):format(type(table)))
+            local function setupImguiConfigRecursive(table)
+                local imcfg = {}
+                for k, v in pairs(table) do
+                    if type(v) == "table" then
+                        imcfg[k] = setupImguiConfigRecursive(v)
+                    elseif type(v) == "number" then
+                        if v % 1 == 0 then
+                            imcfg[k] = imgui.ImInt(v)
+                        else
+                            imcfg[k] = imgui.ImFloat(v)
+                        end
+                    elseif type(v) == "string" then
+                        imcfg[k] = imgui.ImBuffer(256)
+                        imcfg[k].v = u8(v)
+                    elseif type(v) == "boolean" then
+                        imcfg[k] = imgui.ImBool(v)
+                    else
+                        error(("Unsupported type for imguiConfig: %s"):format(type(v)))
+                    end
+                end
+                return imcfg
+            end
+            return setupImguiConfigRecursive(table)
+        end
+        ----------------------------------------------------------------
+
+        function self.save(table, path)
+            assert(type(table)=="table", ("bad argument #1 to 'save' (table expected, got %s)"):format(type(table)))
+            assert(path == nil or type(path) == "string", "Path must be nil or a valid file path.")
+            if path then
+                path = path:find('%.json$') and path or path..'.json'
+            else
+                assert(thisScript().name, "Script name is not defined")
+                path = getWorkingDirectory()..'\\config\\'..thisScript().name..'\\config.json'
+            end
+            makeDirectory(path)
+            local file = io.open(path,"w")
+            if file then
+                file:write(json.encode(table, {indent = true}))
+                file:close()
+            else
+                error("Could not open file for writing: " .. path)
+            end
         end
 
-        -- ЛЕВАЯ ИКОНКА ( ? )
-        local bX, bY = winPos.x + 380, winPos.y + 22
-        draw:AddCircle(imgui.ImVec2(bX, bY), radius, color, 20, 1.3)
-        draw:AddLine(imgui.ImVec2(bX-5, bY-4), imgui.ImVec2(bX+5, bY-4), color, 1.5)
-        draw:AddLine(imgui.ImVec2(bX-5, bY), imgui.ImVec2(bX+5, bY), color, 1.5)
-        draw:AddLine(imgui.ImVec2(bX-5, bY+4), imgui.ImVec2(bX+5, bY+4), color, 1.5)
-        imgui.SetCursorScreenPos(imgui.ImVec2(bX - 10, bY - 10))
-        if imgui.InvisibleButton("##b_btn", imgui.ImVec2(20, 20)) then showControlCenter[0] = not showControlCenter[0] end
-        if imgui.IsItemHovered() then imgui.BeginTooltip() imgui.Text(u8"Центр Управления") imgui.EndTooltip() end
-
-        -- КОНТЕНТ ПЕРВОГО ОКНА
-		imgui.SetCursorScreenPos(startPos)
-
-		-- Используем u8 и Unicode-экранирование напрямую
-		-- \uf0e7 - это молния (bolt), \uf021 - это то, что ты пытался вывести через байты
-		local icon_bolt = " \239\131\167" -- Это код иконки молнии (\uf0e7) в формате UTF-8 
-		renderGradientText(icon_bolt .. u8"  AURA CORE SYSTEM", 2.0)
-
-		imgui.SameLine()
-		imgui.TextDisabled(" v3.3.5")
-
-        local p = imgui.GetCursorScreenPos()
-        -- Делаем линию под заголовком тоже «живой»
-        local p = imgui.GetCursorScreenPos()
-        draw:AddRectFilledMultiColor(imgui.ImVec2(p.x, p.y + 5), imgui.ImVec2(p.x + winWidth - 40, p.y + 7), 0xFF00AAFF, 0x0000AAFF, 0x0000AAFF, 0xFF00AAFF)
-        imgui.Dummy(imgui.ImVec2(0, 15)) 
-
-        imgui.Text(u8"Статус: ") imgui.SameLine()
-        if active then imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.0, 1.0), "ACTIVE")
-        else imgui.TextColored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0), "STANDBY") end
-        
-        imgui.Spacing()
-        imgui.Text(u8(string.format("Дом: %d/%d | Карта: %d/20", currentHouse, maxHouses, currentStep)))
-        imgui.Text(u8"Собрано за сессию: ") imgui.SameLine()
-        imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), tostring(totalBTC) .. " BTC")
-
-        if btcRate > 0 then
-			imgui.Text(u8"Прибыль: ") imgui.SameLine()
-			local profit = totalBTC * btcRate
-			imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), "$" .. formatNumber(profit))
-		end
-
-        imgui.Dummy(imgui.ImVec2(0, 10))
-        imgui.Separator()
-        imgui.Spacing()
-
-        -- ТАЙМЕР И ЛОГЕР
-        if targetTime and not active then
-            local rem = targetTime - os.time()
-            if rem > 0 then
-                local h, m, s = math.floor(rem / 3600), math.floor((rem % 3600) / 60), rem % 60
-                imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), u8"Ожидание старта: ")
-                imgui.SameLine() imgui.Text(string.format("%02u:%02u:%02u", h, m, s))
-                local drawL, pL = imgui.GetWindowDrawList(), imgui.GetCursorScreenPos()
-				local width = winWidth - 40
-				local height = 3
-
-				-- Настройки времени
-				local speed = 1.0 -- Время на один полный перелет (А -> Б)
-				local t = (os.clock() % (speed * 2)) / speed 
-				local is_returning = t > 1.0 -- Летим назад?
-				local p = is_returning and (t - 1.0) or t -- Прогресс текущего броска (0.0 -> 1.0)
-
-				-- Функции "выстрела" (очень резкий старт)
-				local function shoot(x) return 1 - math.pow(1 - x, 4) end
-
-				-- Голова выстреливает первой (занимает первую половину времени)
-				local head_p = shoot(math.min(1.0, p * 1.6)) 
-				-- Хвост выстреливает вторым (начинает позже и догоняет)
-				local tail_p = shoot(math.max(0.0, p * 1.6 - 0.6))
-
-				-- Рассчитываем координаты
-				local startX, endX
-				if not is_returning then
-					-- Летим ВПРАВО (А -> Б)
-					startX = pL.x + (tail_p * width)
-					endX = pL.x + (head_p * width)
-				else
-					-- Летим ВЛЕВО (Б -> А)
-					startX = pL.x + (1.0 - head_p) * width
-					endX = pL.x + (1.0 - tail_p) * width
-				end
-
-				-- Фон
-				drawL:AddRectFilled(imgui.ImVec2(pL.x, pL.y + 2), imgui.ImVec2(pL.x + width, pL.y + 2 + height), 0x15FFFFFF, 10)
-
-				-- Рисуем "выстреливающую" часть
-				if endX > startX then
-					-- Определяем, где голова для градиента (в зависимости от направления)
-					local col1 = not is_returning and 0x0000AAFF or 0xFF00AAFF
-					local col2 = not is_returning and 0xFF00AAFF or 0x0000AAFF
-					
-					drawL:AddRectFilledMultiColor(
-						imgui.ImVec2(startX, pL.y + 2), 
-						imgui.ImVec2(endX, pL.y + 2 + height),
-						col1, col2, col2, col1
-					)
-				end
-
-imgui.SetCursorPosY(imgui.GetCursorPosY() + 10)
-                imgui.Dummy(imgui.ImVec2(0, 10))
-            else targetTime = nil end
-        elseif active then
-            local idx = math.floor(os.clock() / 3.0) % (#techPhrases + 1) + 1
-            local txt = (idx > #techPhrases) and u8(string.format("Узел дома #%03d успешно взломан", currentHouse)) or techPhrases[idx]
-            imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), txt .. string.rep(".", math.floor(os.clock() * 2) % 4))
-            local pB, wB, prg = imgui.GetCursorScreenPos(), winWidth - 40, (os.clock() % 2) / 2 
-            draw:AddRectFilled(imgui.ImVec2(pB.x, pB.y + 2), imgui.ImVec2(pB.x + wB, pB.y + 4), 0x22FFFFFF) 
-            draw:AddRectFilled(imgui.ImVec2(pB.x + (wB * prg), pB.y + 2), imgui.ImVec2(pB.x + (wB * prg) + 20, pB.y + 4), 0xFF00AAFF) 
-            imgui.Dummy(imgui.ImVec2(0, 10))
-        else
-            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.4, 0.4, 0.4, 1.0))
-            imgui.Text(u8"Система в режиме ожидания")
-            imgui.PopStyleColor()
+        function self.load(path)
+            assert(path == nil or type(path) == "string", "Path must be nil or a valid file path.")
+            if path then
+                path = path:find('%.json$') and path or path..'.json'
+			else
+				path = getWorkingDirectory()..'\\config\\'..thisScript().name..'\\config.json'
+			end
+            if doesFileExist(path) then
+                local file = io.open(path, "r")
+                if file then
+                    local content = file:read("*all")
+                    file:close()
+                    return json.decode(content)
+                else
+                    return error("Could not load configuration")
+                end
+            else
+                return {}
+            end
         end
-    imgui.End()
 
-    -- --- ВТОРОЕ ОКНО (CONTROL CENTER) ---
-    if showControlCenter[0] then
-        imgui.SetNextWindowSize(imgui.ImVec2(500, 300), imgui.Cond.FirstUseEver)
-        imgui.Begin(u8"   Mining Control Center", showControlCenter, imgui.WindowFlags.NoCollapse)
-            imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" [ ПАНЕЛЬ В РАЗРАБОТКЕ ]")
-            imgui.Separator()
-            imgui.Spacing()
-            imgui.Text(u8"Данный раздел находится на стадии отладки.")
-            imgui.TextDisabled(u8"Следите за обновлениями в v3.4")
-        imgui.End()
+        function self.update(table, path)
+            assert(type(table)=="table", ("bad argument #1 to 'update' (table expected, got %s)"):format(type(table)))
+            assert(path == nil or (type(path) == "string" and path:match("^.+%.json$")), "Path must be nil or a valid file path ending with '.json'")
+            local loadedCfg = self.load(path)
+			
+			if loadedCfg then
+				for k, v in pairs(table) do
+					if loadedCfg[k] ~= nil then
+						table[k] = loadedCfg[k]
+					end
+				end
+			end
+
+            return true
+        end
+
+        function self.setupImgui(table)
+            assert(imgui ~= nil, "The imgui library is not loaded. Please ensure it is required before using 'setupImgui' function.")
+            return setupImguiConfig(table)
+        end
+
+        return self
     end
 
-    -- СБРОС ВСЕХ 11 СТИЛЕЙ
-    imgui.PopStyleColor(11)
-    if imgui_font then imgui.PopFont() end 
-end)
+    setmetatable(Jcfg, {
+        __call = function(self)
+            return self.__init()
+        end
+    })
+end
+local jcfg = Jcfg()
+
+local cfg = {
+    on = true,
+    coolantPercents = 50,
+    multiply = 1
+}
+jcfg.update(cfg)
+local imcfg = jcfg.setupImgui(cfg)
+function save()
+    jcfg.save(cfg)
+end
+
+local utils = (function()
+    local self = {}
+
+    local function cyrillic(text)
+        local convtbl = {[230]=155,[231]=159,[247]=164,[234]=107,[250]=144,[251]=168,[254]=171,[253]=170,[255]=172,[224]=97,[240]=112,[241]=99,[226]=162,[228]=154,[225]=151,[227]=153,[248]=165,[243]=121,[184]=101,[235]=158,[238]=111,[245]=120,[233]=157,[242]=166,[239]=163,[244]=63,[237]=174,[229]=101,[246]=36,[236]=175,[232]=156,[249]=161,[252]=169,[215]=141,[202]=75,[204]=77,[220]=146,[221]=147,[222]=148,[192]=65,[193]=128,[209]=67,[194]=139,[195]=130,[197]=69,[206]=79,[213]=88,[168]=69,[223]=149,[207]=140,[203]=135,[201]=133,[199]=136,[196]=131,[208]=80,[200]=133,[198]=132,[210]=143,[211]=89,[216]=142,[212]=129,[214]=137,[205]=72,[217]=138,[218]=167,[219]=145}
+        local result = {}
+        for i = 1, #text do
+            local c = text:byte(i)
+            result[i] = string.char(convtbl[c] or c)
+        end
+        return table.concat(result)
+    end
+
+    local function roundUpToThreeDecimalPlaces(num)
+        local mult = 10^3
+        return math.ceil(num * mult) / mult
+    end
+
+    --------------------------------------------------------------------------------------------------------------------------------
+
+    function self.addChat(a)
+        if a then local a_type = type(a) if a_type == 'number' then a = tostring(a) elseif a_type ~= 'string' then return end else return end
+        sampAddChatMessage('{ffa500}'..thisScript().name..'{ffffff}: '..a, -1)
+    end
+
+    function self.printStringNow(text, time)
+        if not text then return end
+        time = time or 100
+        text = type(text) == "number" and tostring(text) or text
+        if type(text) ~= 'string' then return end
+        printStringNow(cyrillic(text), time)
+    end
+
+    function self.getVideocardEarnings(level)
+        -- local earningsTable = {
+        --     0.05,  -- 1 лвл
+        --     0.10, -- 2 лвл
+        --     0.15, -- 3 лвл
+        --     0.20, -- 4 лвл
+        --     0.503250,  -- 5 лвл
+        --     0.631349, -- 6 лвл
+        --     0.736575, -- 7 лвл
+        --     0.876874,  -- 8 лвл
+        --     1.052250,  -- 9 лвл
+        --     1.227625    -- 10 лвл
+        -- }
+        local earningsTable = {
+            0.05,  -- 1 лвл
+            0.10, -- 2 лвл
+            0.15, -- 3 лвл
+            0.20, -- 4 лвл
+            0.50,  -- 5 лвл
+            0.63, -- 6 лвл
+            0.73, -- 7 лвл
+            0.87,  -- 8 лвл
+            1.05,  -- 9 лвл
+            1.22    -- 10 лвл
+        }
+
+        local mult = cfg.multiply == 1 and 1 or cfg.multiply == 2 and 1.2
+
+        if earningsTable[level] then
+            return roundUpToThreeDecimalPlaces(earningsTable[level] * mult)
+            --return earningsTable[level]*1.15
+        else
+            return {0, 0}
+        end
+    end
+	function self.calculateTimeToNine(currentBtc, earningsPerHour)
+    		local target = 9
+    		local remaining = target - currentBtc
+    		if remaining <= 0 then
+        	return 0
+    end
+    return remaining / earningsPerHour
+end
+    function self.calculateRemainingHours(percent)
+        local consumptionPerHour = 0.48
+        local remainingHours = percent / consumptionPerHour
+        return remainingHours
+    end    
+
+    return self
+end)()
+
+local work = {
+    on = false,
+    mode = 1,
+    needSkip = false,
+    videocardMode = ""
+}
+
+local imgui_windows = {
+    main = imgui.ImBool(false),
+    dialog = imgui.ImBool(false)
+}
+
+local json_timer = {false, os.clock(), 0, 0, 0, ''}
 
 function main()
-    while not isSampAvailable() do wait(100) end
-    
-    -- Выводим строк в чат
-    sampAddChatMessage("{FFD700}[MiningBTC] {FFFFFF}Скрипт v3.3 Beta загружен!", -1)
-    sampAddChatMessage("{00FF00}F2 {FFFFFF}- скрыть меню | {00FF00}F3 {FFFFFF}- пауза/старт", -1)
-    sampAddChatMessage("{00FF00}/fwait [часы] {FFFFFF}- запустить таймер", -1)
-    sampAddChatMessage("{00FF00}/freset {FFFFFF}- сбросить прогресс и таймер", -1)
+    repeat wait(0) until isSampAvailable()
+    while not isSampLoaded() do wait(0) end
 
-    sampRegisterChatCommand("fwait", startTimer)
-    sampRegisterChatCommand("freset", function()
-        currentStep, currentHouse, totalBTC, active, targetTime = 1, 0, 0, false, nil
-        sampAddChatMessage("{FFD700}[MiningBTC] {FFFFFF}Прогресс и таймер сброшены.", -1)
-    end)
+    utils.addChat('{99ff99}Загружен{ffffff}. Вкл/Выкл: {ffa500}/farm {ffffff}или {ffa500}F9')
+    utils.addChat('{99ff99}Загружен{ffffff}. Запуск через флешку: {ffa500}/flashminer')
 
-    while true do
+    -- Функция переключения (вынес отдельно, чтобы не дублировать код)
+    local function toggleOldScript()
+        cfg.on = not cfg.on
+        local text = cfg.on and "Скрипт {99ff99}включен{ffffff}." or "Скрипт {ff0000}отключен{ffffff}."
+        utils.addChat(text)
+        
+        -- ОГРОМНЫЙ ТЕКСТ НА ЭКРАНЕ (на 2 секунды)
+        local gameText = cfg.on and "~g~MINING TOOLS: ON" or "~r~MINING TOOLS: OFF"
+        printStringNow(gameText, 2000)
+        
+        save()
+    end
+
+    sampRegisterChatCommand('farm', toggleOldScript)
+
+    while true do 
         wait(0)
-        if isKeyJustPressed(vkeys.VK_F2) then
-            showMenu[0] = not showMenu[0]
-            imgui.ShowCursor = showMenu[0]
-            
-            if showMenu[0] then
-                lua_thread.create(function()
-                    sampSendChat('/phone')
-                    sendcef('launchedApp|39') -- ID 39 - Курс валют в /phone
-                    sampSendChat('/phone')
-                end)
+        -- [[ ДОБАВИЛИ ПЕРЕКЛЮЧЕНИЕ НА F9 ]]
+        if isKeyJustPressed(vkeys.VK_F9) then
+            toggleOldScript()
+        end
+
+        imgui.Process = imgui_windows.dialog.v
+        
+        if json_timer[1] then
+            if json_timer[2] + 0.125 <= os.clock() then
+                json_timer[2] = os.clock()
+                json_timer[1] = false
+                sampSendDialogResponse(json_timer[3], json_timer[4], json_timer[5], json_timer[6])
             end
         end
-        if isKeyJustPressed(vkeys.VK_F3) then toggleMining() end
     end
 end
 
-function toggleMining()
-    active = not active
-    isWaiting = false
-    if active then 
-        sampAddChatMessage("{FFD700}[MiningBTC] {00FF00}Старт!", -1)
-        sampProcessChatInput("/flashminer") 
-    else
-        sampAddChatMessage("{FFD700}[MiningBTC] {FF4444}Пауза.", -1)
-    end
-end
+local __imDialogData = {
+    id = 25565,
+    title = "Dialog",
+    videocards = {},
+    selectedVideocard = -1
+}
 
-function startTimer(arg)
-    local hours = tonumber(arg)
-    if hours then
-        targetTime = os.time() + (hours * 3600)
-        lua_thread.create(function()
-            wait(hours * 3600 * 1000)
-            if not active then targetTime = nil toggleMining() end
-        end)
-    end
-end
+local workLauncher = (function()
+    local self = {}
 
-function processNextStep()
-    if isWaiting then return end
-    isWaiting = true
-    
-    currentStep = currentStep + 1
-
-    -- Если прошли все 20 карт
-    if currentStep > 20 then
-        currentStep = 1
-        currentHouse = currentHouse + 1
-        
-        if currentHouse >= maxHouses then
-            active = false
-            sampAddChatMessage("{FFD700}[MiningBTC] {FFFFFF}Все дома полностью обработаны!", -1)
-        else
-            -- Вместо команды мы просто даем скрипту понять, 
-            -- что в следующем диалоге (видеокарт) нужно нажать "Назад"
-            lua_thread.create(function()
-                wait(300)
-                local id = sampGetCurrentDialogId()
-                if id ~= -1 then
-                    -- Нажимаем "Закрыть/Назад" (ID 0) в списке видеокарт
-                    sampSendDialogResponse(id, 0, 0, "") 
-                end
-            end)
-        end
-    end
-    isWaiting = false
-end
-
--- Логика чата
-function sampev.onServerMessage(color, text)
-    if not active then return end
-    local cleanText = text:gsub('{......}', ''):lower()
-    
-    if cleanText:find("Выберите дом с майнинг") or 
-       cleanText:find("минимум 1") or 
-       cleanText:find("целыми частями") or
-       cleanText:find("Вам был добавлен предмет") or
-	   cleanText:find("Вы вывели") then
-        
-        if (cleanText:find("минимум 1") or cleanText:find("целыми частями")) and not isWaiting then
-            processNextStep()
-        end
-        return false 
-    end
-end
-
--- Логика диалогов
-function sampev.onShowDialog(id, style, title, button1, button2, text)
-    local cleanTitle = title:gsub('{......}', '')
-
-    -- [[ ТИХИЙ ПЕРЕХВАТ КУРСА ]]
-    if cleanTitle:find("Курс валют") then
-        local rateVal = text:match("Bitcoin %(BTC%):%s+%$([%d]+)")
-        if rateVal then
-            btcRate = tonumber(rateVal)
-            -- МЫ УБРАЛИ ОТСЮДА sampAddChatMessage, чтобы не флудить в чат
-            
-            -- Автоматически закрываем диалог через 100мс
-            lua_thread.create(function() 
-                wait(100) 
-                sampSendDialogResponse(id, 0, 0, "") 
-            end)
-            return false -- Скрываем окно от глаз
-        end
-    end
-
-    -- Если скрипт на паузе, дальше ничего не делаем
-    if not active then return end
-
-    -- 1. Выбор дома
-    if cleanTitle:find("Выбор") and not cleanTitle:find("видеокарт") then
-        lua_thread.create(function() wait(250) sampSendDialogResponse(id, 1, currentHouse, "") end)
-        return false 
-    end
-
-    -- 2. ВЫБОР ВИДЕОКАРТЫ
-    if cleanTitle:find("Выберите видеокарту") then
-        lua_thread.create(function()
-            wait(250)
-            -- Если мы только что сбросили шаг в 1 и прибавили дом, 
-            -- но все еще в этом окне — значит надо выйти в список домов
-            if currentStep == 1 and isWaiting then 
-                sampSendDialogResponse(id, 0, 0, "") -- Жмем "Назад" (выход в список домов)
-            else
-                local targetIdx = gpu_indexes[currentStep]
-                if targetIdx then
-                    sampSendDialogResponse(id, 1, targetIdx, "")
+    local checkers = {
+        [1] = function(v) -- checkVideocardStatus
+            if work.mode == 3 then
+                if v[2]:find("{F78181}На паузе") and tonumber(v[2]:match("(%d+%.%d+)%%?%s*$")) > 0 then
+                    return true
                 else
-                    -- Страховка: если индекс не найден, выходим
-                    sampSendDialogResponse(id, 0, 0, "")
+                    return false
                 end
-            end
-        end)
-        return false 
-    end
-
-    -- 3. Стойка (где кнопка "Забрать прибыль")
-    if cleanTitle:find("Стойка №") then
-        lua_thread.create(function() 
-            wait(300) 
-            -- Ищем число BTC в тексте диалога
-            local btcVal = text:match("Забрать прибыль %(([%d%.%,]+)%s+BTC%)")
-            
-            if btcVal then
-                -- Двойные скобки вокруг gsub критически важны!
-                local val = tonumber((btcVal:gsub(',', '.'))) 
-                if val and val >= 1.0 then 
-                    totalBTC = totalBTC + math.floor(val) 
-                end
-                
-                -- Нажимаем "Забрать прибыль" (индекс 1, кнопка 1)
-                sampSendDialogResponse(id, 1, 1, "") 
             else
-                -- Если прибыли нет или мы вернулись после снятия
-                sampSendDialogResponse(id, 0, 0, "") -- Жмем "Назад"
-                processNextStep() -- Идем к следующей карте
+                return v[2]:find("{BEF781}Работает") and true or false
             end
-        end)
-        return false 
+        end,
+        
+        [2] = function(v) -- checkProfit
+            return tonumber(v[2]:match("(%d+)%.%d%d%d%d%d%d")) > 0
+        end,
+
+        [3] = function(v) -- checkCoolant
+            return tonumber(v[2]:match("(%d+%.%d+)%%?%s*$")) <= cfg.coolantPercents
+        end
+    }
+
+    function self.handleVideocardAction(mode, checkFunction, successMessage)
+        work.on = true
+        work.mode = mode
+        work.needSkip = false
+        for k, v in pairs(__imDialogData.videocards) do
+            if checkers[checkFunction](v) then
+                sampSendDialogResponsed(__imDialogData.id, 1, v[1])
+                return
+            end
+        end
+        work.on = false
+        utils.addChat(successMessage)
     end
 
-    -- 4. Подтверждение прибыли (окно после нажатия "Снять")
-    if cleanTitle:find("прибыли") then
-        lua_thread.create(function() 
-            wait(200)
-            -- ВАЖНО: Нажимаем кнопку 0 (обычно это кнопка "Назад" или "Закрыть")
-            -- Это вернет нас в список видеокарт дома
-            sampSendDialogResponse(id, 0, 0, "") 
+    return self
+end)()
+
+local w,h = getScreenResolution()
+local window_width,window_height = 233,140
+local imStyle = imgui.GetStyle()
+function imgui.OnDrawFrame()
+    
+    if imgui_windows.dialog.v then
+
+        imgui.SetNextWindowSize(imgui.ImVec2(1000, 600), imgui.Cond.FirstUseEver)
+        imgui.SetNextWindowPos(imgui.ImVec2(w/2 - 500, h/2 - 300), imgui.Cond.FirstUseEver)
+        imgui.Begin("##dialog_window", imgui_windows.dialog, imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoMove)
+
+        local coolantRestore = 0
+        local needAttention = false
+        local summaryAverage = {btc = 0}
+        local avaibleCrypto = {btc = 0}
+        local farmStopHours = nil
+
+        imgui.SameLine()
+        imgui.SetCursorPosX(1000/2 - imgui.CalcTextSize(u8(__imDialogData.title)).x/2)
+        imgui.TextColoredRGB(thisScript().name .. ": "..__imDialogData.title)
+
+        imgui.SameLine()
+
+        imgui.SetCursorPosX(1000 - 50 - imStyle.ItemSpacing.x)
+        imgui.SetCursorPosY(imStyle.ItemSpacing.y)
+        if imgui.customCloseButton("X##close_button", imgui.ImVec2(50, 25)) and not work.on then
+            __closeWindow(true)
+        end
+
+        imgui.Separator()
+
+        imgui.BeginChild('##child_wrapper 1', imgui.ImVec2(500, 0), false)
+
+            imgui.BeginChild('##dialog_child 1', imgui.ImVec2(0, imgui.GetWindowHeight()-50-imStyle.ItemSpacing.y*2), true)
+
+            --imgui.TextColoredRGB(__imDialogData.subTitle)
+            --imgui.Separator()
+
+            for k, v in pairs(__imDialogData.videocards) do
+                -- Проверка необходимости внимания
+                if v[2]:find("На паузе") or tonumber(v[2]:match('(%d+%.%d+)%%')) <= cfg.coolantPercents then
+                    needAttention = true
+                end
             
-            -- Сразу после этого запускаем переход к следующей карте
-            processNextStep()
-        end)
-        return false 
-    end
-end 
+                -- Обновление суммарного заработка
+                local level = tonumber(v[2]:match("(%d+) уровень"))
+                local earnings = utils.getVideocardEarnings(level)
 
-function sendcef(str)
-    local bs = raknetNewBitStream()
-    raknetBitStreamWriteInt8(bs, 220)
-    raknetBitStreamWriteInt8(bs, 18)
-    raknetBitStreamWriteInt16(bs, #str) 
-    raknetBitStreamWriteString(bs, str)
-    raknetBitStreamWriteInt32(bs, 0)
-    raknetSendBitStream(bs)
-    raknetDeleteBitStream(bs)
+
+		local currentBtc = tonumber(v[2]:match("([%d%.]+)%s*BTC")) or 0
+
+		if currentBtc and earnings and earnings > 0 then
+    		local hoursLeft = utils.calculateTimeToNine(currentBtc, earnings)
+
+    		if not farmStopHours or hoursLeft < farmStopHours then
+        	farmStopHours = hoursLeft
+    		end
+	end
+                avaibleCrypto.btc = avaibleCrypto.btc + tonumber(v[2]:match("(%d+)%.%d%d%d%d%d%d"))
+		summaryAverage.btc = summaryAverage.btc + earnings
+            
+                -- Извлечение текущего процента охлаждающей жидкости
+                local cT = tonumber(v[2]:match("(%d+%.%d+)%%"))
+                coolantRestore = (coolantRestore ~= 0) and (cT < coolantRestore and cT or coolantRestore) or cT
+            
+                -- Обработка элементов интерфейса imgui
+                if imgui.SelectableEx(v[2], __imDialogData.selectedVideocard == v[1], 0, imgui.ImVec2(0, 15), function()
+                    if imgui.IsItemHovered() then
+                        if imgui.IsMouseDoubleClicked(0) then
+                            sampSendDialogResponsed(__imDialogData.id, 1, v[1])
+                            imgui_windows.dialog.v = false
+                        end
+                        imgui.BeginTooltip()
+                            imgui.TextColoredRGB('Доход:\n - В час: {99ff99}'..earnings..' BTC{ffffff}.\n - В сутки: {99ff99}'..(earnings*24)..' BTC{ffffff}.')
+                            imgui.TextColoredRGB('Проработает: {ffa500}'..(math.floor(utils.calculateRemainingHours(cT)))..' {ffffff}часов.')
+                        imgui.EndTooltip()
+                    end
+                end) then
+                    __imDialogData.selectedVideocard = v[1]
+                end
+            end
+
+            imgui.EndChild()
+
+            imgui.SetCursorPosX(imgui.GetWindowWidth()/2-100-imStyle.ItemSpacing.x)
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1.0))
+		if imgui.Button(u8'Выбрать##selectDialogBtn', imgui.ImVec2(100, 50)) and not work.on then
+                sampSendDialogResponsed(__imDialogData.id, 1, __imDialogData.selectedVideocard)
+                imgui_windows.dialog.v = false
+            end
+            imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+		imgui.SameLine()
+            	imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1.0))
+		if imgui.Button(u8'Закрыть##CloseDialogBtn', imgui.ImVec2(100, 50)) and not work.on then
+                __closeWindow(true)
+            end
+		imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+        imgui.EndChild()
+
+        imgui.SameLine()
+
+        imgui.BeginChild('##child_wrapper 2', imgui.ImVec2(0, 0), false)
+
+            imgui.BeginChild('##dialog_child 2', imgui.ImVec2(0, imgui.GetWindowHeight()/2 - imStyle.ItemSpacing.y), true)
+
+                imgui.TextColoredRGB("Статус фермы: "..(needAttention and "{FFA500}Требует внимания!" or "{99ff99}Всё хорошо."))
+
+                local maxVideocards = (__imDialogData.title:find("дом") == nil) and 4 or 20
+
+                imgui.TextColoredRGB("Видеокарт: {ffcc00}"..#__imDialogData.videocards.." из "..maxVideocards..". {abcdef}"..(#__imDialogData.videocards>=maxVideocards and " " or "(Не хватает: "..(maxVideocards-#__imDialogData.videocards)..")"))
+
+                imgui.TextColoredRGB("Доходность:\n - В час: {99ff99}"..summaryAverage.btc.." BTC{ffffff}.\n - В сутки: {99ff99}"..(summaryAverage.btc*24)..' BTC{ffffff}.')
+		imgui.TextColoredRGB("Можно снять: {99ff99}"..avaibleCrypto.btc.." BTC.{ffffff}")
+
+                local coolantRestore = (math.floor(utils.calculateRemainingHours(coolantRestore)))
+                imgui.TextColoredRGB("{ffcc00}Дозаправка через: {ffcc00}"..coolantRestore.."ч.")
+		if farmStopHours then
+    			local totalMinutes = math.floor(farmStopHours * 60)
+			local hours = math.floor(totalMinutes / 60)
+			local minutes = totalMinutes % 60
+
+			imgui.TextColoredRGB("{ffcc00}Остановка майнинга через: {ffcc00}"..hours.."ч "..minutes.."м.")
+		end
+                imgui.Separator()
+
+                imgui.Text(u8'Расчет доходности:')
+                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 1.0, 0.5, 1.0))
+                if imgui.RadioButton("ONLINE (+20%)##multuplyButton", imcfg.multiply, 2) then
+                    cfg.multiply = imcfg.multiply.v
+                    save()
+                end
+                imgui.PopStyleColor()
+		
+		imgui.SameLine()
+                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.6, 0.6, 1.0))
+		if imgui.RadioButton("OFFLINE##multuplyButton", imcfg.multiply, 1) then
+                    cfg.multiply = imcfg.multiply.v
+                    save()
+                end
+		imgui.PopStyleColor()
+            
+		imgui.EndChild()
+
+            imgui.BeginChild('##dialog_child 3', imgui.ImVec2(0, 0), true)
+
+                if work.on then
+                    local name = ""
+                    if work.mode == 1 then
+                        name = "Забираю прибыль..."
+                    elseif work.mode == 2 then
+                        name = "Заливаю охл. жидкость..."
+                    elseif work.mode == 3 then
+                        name = "Включаю видеокарты..."
+                    elseif work.mode == 4 then
+                        name = "Выключаю видеокарты..."
+                    end
+                    imgui.MihailKrug(name)
+                else
+		imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 1.0, 0.5, 1.0))
+                    if imgui.Button(u8'Включить видеокарты', imgui.ImVec2(imgui.GetWindowWidth()/2-imStyle.ItemSpacing.x*2, 30)) then
+                        workLauncher.handleVideocardAction(3, 1, "Все видеокарты включены, или в видеокартах нет охл. жидкости.")
+                    end
+                    imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+                    imgui.SameLine()
+                    
+		imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.6, 0.6, 1.0))
+                    if imgui.Button(u8'Выключить видеокарты', imgui.ImVec2(imgui.GetWindowWidth()/2-imStyle.ItemSpacing.x, 30)) then
+                        workLauncher.handleVideocardAction(4, 1, "Все видеокарты выключены.")
+                    end
+                    imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.8, 0.0, 1.0))
+			if imgui.Button(u8'Забрать прибыль', imgui.ImVec2(imgui.GetWindowWidth()-imStyle.ItemSpacing.x*2, 30)) then
+                        workLauncher.handleVideocardAction(1, 2, "Нечего забирать.")
+                    end
+                    imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+                    
+			if imgui.ButtonClickable("Нельзя заливать жидкости через 'Флэшка Майнера'", (__imDialogData.title:find("дом") == nil), u8'Залить охлаждающие жидкости', imgui.ImVec2(imgui.GetWindowWidth()-imStyle.ItemSpacing.x*2, 30)) then
+                        workLauncher.handleVideocardAction(2, 3, "Охлаждение не требуется.")
+                    end
+			imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1.0))
+                    if imgui.Button(u8'Настройки', imgui.ImVec2(imgui.GetWindowWidth()-imStyle.ItemSpacing.x*2, 30)) then
+                        imgui.OpenPopup(u8'Настройки##confirmPopup')
+                    end
+			imgui.PopStyleColor() -- не забываем вернуть цвет обратно
+                    _settingsPopup()
+
+                end
+
+            imgui.EndChild()
+
+        imgui.EndChild()
+
+        imgui.End()
+
+    end
+
+end
+
+function imgui.SelectableEx(label, selected, flags, imVecSize, hoverFunc)
+    if imgui.Selectable("##"..label, selected, flags, imVecSize) then
+        return true
+    end
+    hoverFunc()
+    imgui.SameLine()
+    imgui.SetCursorPosX(imgui.GetStyle().ItemSpacing.x)
+    imgui.TextColoredRGB(label)
+end
+function imgui.TextColoredRGB(text)
+    local style = imgui.GetStyle()
+    local colors = style.Colors
+    local ImVec4 = imgui.ImVec4
+
+    local explode_argb = function(argb)
+        local a = bit.band(bit.rshift(argb, 24), 0xFF)
+        local r = bit.band(bit.rshift(argb, 16), 0xFF)
+        local g = bit.band(bit.rshift(argb, 8), 0xFF)
+        local b = bit.band(argb, 0xFF)
+        return a, r, g, b
+    end
+
+    local getcolor = function(color)
+        if color:sub(1, 6):upper() == 'SSSSSS' then
+            local r, g, b = colors[1].x, colors[1].y, colors[1].z
+            local a = tonumber(color:sub(7, 8), 16) or colors[1].w * 255
+            return ImVec4(r, g, b, a / 255)
+        end
+        local color = type(color) == 'string' and tonumber(color, 16) or color
+        if type(color) ~= 'number' then return end
+        local r, g, b, a = explode_argb(color)
+        return imgui.ImColor(r, g, b, a):GetVec4()
+    end
+
+    local render_text = function(text_)
+        for w in text_:gmatch('[^\r\n]+') do
+            local text, colors_, m = {}, {}, 1
+            w = w:gsub('{(......)}', '{%1FF}')
+            while w:find('{........}') do
+                local n, k = w:find('{........}')
+                local color = getcolor(w:sub(n + 1, k - 1))
+                if color then
+                    text[#text], text[#text + 1] = w:sub(m, n - 1), w:sub(k + 1, #w)
+                    colors_[#colors_ + 1] = color
+                    m = n
+                end
+                w = w:sub(1, n - 1) .. w:sub(k + 1, #w)
+            end
+            if text[0] then
+                for i = 0, #text do
+                    imgui.TextColored(colors_[i] or colors[1], u8(text[i]))
+                    imgui.SameLine(nil, 0)
+                end
+                imgui.NewLine()
+            else imgui.Text(u8(w)) end
+        end
+    end
+
+    render_text(text)
+end
+function imgui.customCloseButton(label, size)
+    local style = imgui.GetStyle()
+    local colors = style.Colors
+
+    local buttonColor = imgui.ImVec4(0.8, 0.0, 0.0, 1.0) -- Red
+    local buttonHoverColor = imgui.ImVec4(1.0, 0.2, 0.2, 1.0) -- Lighter Red
+    local buttonActiveColor = imgui.ImVec4(0.6, 0.0, 0.0, 1.0) -- Darker Red
+
+    local oldButtonColor = colors[imgui.Col.Button]
+    local oldButtonHoveredColor = colors[imgui.Col.ButtonHovered]
+    local oldButtonActiveColor = colors[imgui.Col.ButtonActive]
+    local oldTextColor = colors[imgui.Col.Text]
+
+    imgui.PushStyleColor(imgui.Col.Button, buttonColor)
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, buttonHoverColor)
+    imgui.PushStyleColor(imgui.Col.ButtonActive, buttonActiveColor)
+    imgui.PushStyleColor(imgui.Col.Text, oldTextColor)
+
+    local clicked = imgui.Button(label, size)
+    
+    imgui.PopStyleColor(4)
+
+    return clicked
+end
+function imgui.ButtonClickable(hint, clickable, ...)
+    if clickable then
+        return imgui.Button(...)
+
+    else
+        local r, g, b, a = imgui.ImColor(imgui.GetStyle().Colors[imgui.Col.Button]):GetFloat4()
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(r, g, b, a/2) )
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(r, g, b, a/2))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(r, g, b, a/2))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.GetStyle().Colors[imgui.Col.TextDisabled])
+            imgui.Button(...)
+        imgui.PopStyleColor()
+        imgui.PopStyleColor()
+        imgui.PopStyleColor()
+        imgui.PopStyleColor()
+        if hint then
+            if imgui.IsItemHovered() then
+                imgui.SetTooltip(u8(hint))
+            end
+        end
+    end
+end
+function imgui.MihailKrug(text, hint)
+    local value = 0.3
+    local bgColor = imgui.GetColorU32(imgui.ImVec4(0.2, 0.2, 0.2, 1.0))
+    local fgColor = imgui.GetColorU32(imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
+    local speed = 2.0
+    local width = 10.0
+    text = u8(text or "Process...")
+    hint = hint and u8(hint) or nil
+
+    -- Вычисление размеров текста и радиуса круга
+    local textSize = imgui.CalcTextSize(text)
+    local radius = math.max(textSize.x, textSize.y) * 0.5 + width + 10
+
+    -- Установка позиции курсора для центрирования круга
+    imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - (radius * 2)) / 2)
+
+    local drawList = imgui.GetWindowDrawList()
+    local cursorPos = imgui.GetCursorScreenPos()
+    local centerX = cursorPos.x + radius
+    local centerY = cursorPos.y + radius
+
+    -- Параметры анимации
+    local segments = 64
+    local angle = (1.0 - value) * math.pi
+    local animatedAngle = (math.pi * 0.5 + os.clock() * speed) % (math.pi * 2)
+    local endAngle = animatedAngle + angle
+    local radiusInner = radius - width
+
+    -- Рисование круга и проверка наведения курсора
+    imgui.Dummy(imgui.ImVec2(radius * 2, radius * 2))
+    if hint and imgui.IsItemHovered() then
+        fgColor = imgui.GetColorU32(imgui.ImVec4(imgui.GetStyle().Colors[imgui.Col.ButtonHovered]))
+        imgui.SetTooltip(hint)
+    end
+
+    -- Рисование сегментов круга
+    if angle > 0 then
+        local step = angle / segments
+        for i = 0, segments - 1 do
+            local currentAngle = animatedAngle + i * step
+            local nextAngle = currentAngle + step
+
+            local x1 = centerX + math.cos(currentAngle) * radius
+            local y1 = centerY + math.sin(currentAngle) * radius
+            local x2 = centerX + math.cos(nextAngle) * radius
+            local y2 = centerY + math.sin(nextAngle) * radius
+            local x3 = centerX + math.cos(currentAngle) * radiusInner
+            local y3 = centerY + math.sin(currentAngle) * radiusInner
+            local x4 = centerX + math.cos(nextAngle) * radiusInner
+            local y4 = centerY + math.sin(nextAngle) * radiusInner
+
+            drawList:AddQuadFilled(imgui.ImVec2(x1, y1), imgui.ImVec2(x2, y2), imgui.ImVec2(x4, y4), imgui.ImVec2(x3, y3), fgColor)
+        end
+    end
+
+    -- Рисование текста в центре круга
+    local textPos = imgui.ImVec2(centerX - textSize.x * 0.5, centerY - textSize.y * 0.5)
+    drawList:AddText(textPos, fgColor, text)
+
+    -- Проверка нажатия на элемент
+    if imgui.IsItemHovered() and imgui.IsItemClicked(0) then
+        return true
+    end
+end
+function imgui.Link(label, description)
+
+    local size = imgui.CalcTextSize(label)
+    local p = imgui.GetCursorScreenPos()
+    local p2 = imgui.GetCursorPos()
+    local result = imgui.InvisibleButton(label, size)
+
+    imgui.SetCursorPos(p2)
+
+    if imgui.IsItemHovered() then
+        if description then
+            imgui.BeginTooltip()
+            imgui.PushTextWrapPos(600)
+            imgui.TextUnformatted(description)
+            imgui.PopTextWrapPos()
+            imgui.EndTooltip()
+
+        end
+
+        imgui.TextColored(imgui.GetStyle().Colors[imgui.Col.CheckMark], label)
+        imgui.GetWindowDrawList():AddLine(imgui.ImVec2(p.x, p.y + size.y), imgui.ImVec2(p.x + size.x, p.y + size.y), imgui.GetColorU32(imgui.GetStyle().Colors[imgui.Col.CheckMark]))
+
+    else
+        imgui.TextColored(imgui.GetStyle().Colors[imgui.Col.CheckMark], label)
+    end
+
+    return result
+end
+function _settingsPopup()
+    if imgui.BeginPopupModal(u8'Настройки##confirmPopup',nil,imgui.WindowFlags.NoResize) then
+
+        --imgui.SetCursorPosX(imgui.GetWindowWidth()/2 - imgui.CalcTextSize(u8("Укажите процент охлаждающей жидкости для заполнения:")).x/2)
+        imgui.Text(u8("Укажите процент охлаждающей жидкости для заполнения:"))
+        imgui.PushItemWidth(imgui.GetWindowWidth()-imStyle.ItemSpacing.x*2)
+        if imgui.SliderInt('##coolantSlider', imcfg.coolantPercents, 1, 99) then
+            cfg.coolantPercents = imcfg.coolantPercents.v
+            save()
+        end
+        imgui.Separator()
+        --imgui.Text(u8'Множитель: '..cfg.multiply .. " | "..tostring(cfg.multiply == 1 and 1 or cfg.multiply == 2 and 1.5 or cfg.multiply == 3 and 2))
+
+        -- if imgui.Checkbox(u8'Считать 2х прибыль', imcfg.multiply2x) then
+        --     cfg.multiply2x = imcfg.multiply2x.v
+        --     save()
+        -- end
+        -- if imgui.IsItemHovered() then
+        --     imgui.SetTooltip(u8("Если ваши фермы находятся на Vice-City или ПХ, то майнинг приносит x2.\nНажмите эту галочку."))
+        -- end
+
+        imgui.NewLine()
+
+        imgui.SetCursorPosX(imgui.GetWindowWidth()/2-50)
+        if imgui.Button(u8'Закрыть##declinePopup', imgui.ImVec2(100, 50)) then
+            imgui.CloseCurrentPopup()
+        end
+    
+        imgui.EndPopup()
+    end
+end
+function __closeWindow(bool)
+    sampSendDialogResponsed(__imDialogData.id, 0)
+    imgui_windows.dialog.v = false
+    if bool and sampIsDialogActive() then sampCloseCurrentDialogWithButton(0) end
+end
+
+local needReturnToMainWindow = false
+local cryptoAnalysys = {
+    btc = 0,
+    asc = 0
+}
+
+function sampev.onShowDialog(id, style, title, button1, button2, text, placeholder)
+    if needReturnToMainWindow then
+        local a = title:gsub("%-","")
+        if a:find("{BFBBBA}Стойка №%d+ | Полка №%d+") or a:find("{BFBBBA}Выберите тип жидкости") then
+            sampSendDialogResponsed(id, 0)
+        end
+    end
+
+    if title:find("{BFBBBA}Выберите видеокарту") then
+        needReturnToMainWindow = false
+        if not cfg.on then return end
+        __imDialogData.id = id
+        __imDialogData.title = title
+        __imDialogData.videocards = {}
+        __imDialogData.selectedVideocard = -1
+
+        local listboxId = -1
+
+        --Полка №1 | {BEF781}Работает	2.44447 BTC	7 уровень	91.37%
+        for line in text:gmatch("[^\r\n]+") do
+
+            if line:find("^Полка") then
+                local insertText = (line:find("Работает") and line:gsub("Работает", "Работает{ffffff}") or line:gsub("На паузе", "На паузе{ffffff}")):gsub("Полка №%d+", "Видеокарта №"..(#__imDialogData.videocards+1))
+                local properDetect = line:match("(%d+%.%d+)%%?%s*$")
+                if properDetect and tonumber(properDetect) <= cfg.coolantPercents then
+                    insertText = insertText:gsub("(%d+%.%d+)%%?%s*$", "{ff9999}%1%%")
+                elseif properDetect then
+                    insertText = insertText:gsub("(%d+%.%d+)%%?%s*$", "{99ff99}%1%%")
+                end
+                insertText = insertText:gsub("(%d+%.%d+%s+BTC)", "{99ff99}%1{ffffff}"):gsub("(%d+%.%d+%s+ASC)", "{ffa500}%1{ffffff}")
+                
+                table.insert(__imDialogData.videocards, {
+                    listboxId,
+                    insertText
+                })
+                __imDialogData.selectedVideocard = __imDialogData.selectedVideocard==-1 and listboxId or __imDialogData.selectedVideocard
+            end
+
+            listboxId = listboxId+1
+
+        end
+
+        imgui_windows.dialog.v = true
+
+        if not work.on then
+            return false
+        end
+    else
+        if not work.on then imgui_windows.dialog.v = false end
+    end
+
+    if not work.on then return end
+
+    local function deactivateScript(message, needOff)
+        if needOff then imgui_windows.dialog.v = false end
+        work.on = false
+        utils.addChat(message)
+    end
+
+    local function findLineAndRespond(pattern, checkFunc, listboxId)
+        for line in string.gmatch(text, "[^\r\n]+") do
+            if line:find(pattern) and checkFunc(line) then
+                sampSendDialogResponsed(id, 1, listboxId, line)
+                return true
+            end
+            listboxId = listboxId + 1
+        end
+        return false
+    end
+
+    if work.mode == 1 then
+        if title:find('{BFBBBA}Выберите видеокарту') then
+            if not text:find('%d+%.%d%d%d%d%d%d') then
+                deactivateScript("Ошибка! Код 1.")
+                return
+            end
+    
+            if not findLineAndRespond('%d+%.%d%d%d%d%d%d', function(line)
+                return tonumber(line:match("(%d+)%.%d%d%d%d%d%d")) > 0
+            end, -1) then
+                deactivateScript("Криптовалюта не найдена.")
+                if cryptoAnalysys.btc > 0 or cryptoAnalysys.asc > 0 then
+                    utils.addChat("Забрали: {99ff99}"..cryptoAnalysys.btc.." BTC {ffffff}| {ffa500}"..cryptoAnalysys.asc..' ASC{ffffff}.')
+                    cryptoAnalysys.btc = 0
+                    cryptoAnalysys.asc = 0
+                end
+            end
+    
+        elseif title:gsub("%-",""):find("{BFBBBA}Стойка №%d+ | Полка №%d+") then
+            if not findLineAndRespond('%d+%.%d%d%d%d%d%d', function(line)
+                return tonumber(line:match("(%d+)%.%d%d%d%d%d%d")) > 0
+            end, 0) then
+                sampSendDialogResponsed(id, 0)
+            end
+        elseif title:find('{BFBBBA}Вывод прибыли видеокарты') then
+            sampSendDialogResponsed(id, 1)
+        end
+
+    elseif work.mode == 2 then
+
+        if title:find('{BFBBBA}Выберите видеокарту') then
+            if title:find('%(дом') then 
+                deactivateScript("Режим охлаждения работает только в ручном режиме. Не в /flashminer. Скрипт деактивирован.", true) 
+                return 
+            end            
+
+            if not text:find("(%d+%.%d+)%%?%s*$") then
+                deactivateScript("Охлаждение не нужно. 1")
+                return
+            end
+
+            if not findLineAndRespond("(%d+%.%d+)%%?%s*$", function(line) return tonumber(line:match("(%d+%.%d+)%%?%s*$")) <= cfg.coolantPercents end, -1) then
+                deactivateScript("Охлаждение не нужно. 2")
+            end
+
+        elseif title:gsub("%-",""):find("{BFBBBA}Стойка №%d+ | Полка №%d+") then
+            if work.needSkip then
+                sampSendDialogResponsed(id, 0)
+                work.needSkip = false
+                return
+            end
+
+            if not findLineAndRespond('Залить охлаждающую жидкость', function() return true end, 0) then
+                sampSendDialogResponsed(id, 0)
+            else
+                work.videocardMode = ""
+                if text:find("BTC") then
+                    work.videocardMode = "btc"
+                elseif text:find("ASC") then
+                    work.videocardMode = "asc"
+                end
+            end
+
+        elseif title:find('{BFBBBA}Выберите тип жидкости') then
+            local fluidType = "None"
+            if work.videocardMode == 'btc' then
+                fluidType = "для видеокарты"
+            elseif work.videocardMode == 'asc' then
+                fluidType = "Охлаждающая жидкость для Arizona Video Card"
+            end
+            if not findLineAndRespond(fluidType, function(line) -- Охлаждающая жидкость для видеокарты	{CCCCCC}[ 15 ]
+                return tonumber(line:match("%[ (%d+) %]")) > 0
+            end, -1) then
+                deactivateScript("Скрипт деактивирован. Нет охлаждающей жидкости.", false)
+                sampSendDialogResponsed(id, 0)
+                needReturnToMainWindow = true
+            end
+            work.needSkip = true
+        end
+
+    elseif work.mode == 3 or work.mode == 4 then
+
+        if title:find('{BFBBBA}Выберите видеокарту') then           
+
+            if not findLineAndRespond(work.mode==3 and "{F78181}На паузе" or "{BEF781}Работает", function(line)
+                return tonumber(line:match("(%d+%.%d+)%%?%s*$")) > 0
+            end, -1) then
+                deactivateScript("Работа не требуется, или в видеокартах нет охл. жидкости.")
+            end
+
+        elseif title:gsub("%-",""):find("{BFBBBA}Стойка №%d+ | Полка №%d+") then
+            if not findLineAndRespond(work.mode==3 and "{BEF781}Запустить видеокарту" or "{F78181}Остановить видеокарту", function() return true end, 0) then
+                sampSendDialogResponsed(id, 0)
+            end
+        end
+    end
+end
+
+function sampev.onServerMessage(color, text)
+    if not work.on then return end
+    if text:find("^Вы вывели {ffffff}%d+ [BTCASC]+{ffff00}") then
+        if text:find("BTC") then
+            cryptoAnalysys.btc = cryptoAnalysys.btc + tonumber(text:match("Вы вывели {ffffff}(%d+)"))
+        elseif text:find("ASC") then
+            cryptoAnalysys.asc = cryptoAnalysys.asc + tonumber(text:match("Вы вывели {ffffff}(%d+)"))
+        end
+        return false
+    elseif text:find("^Вам был добавлен предмет") then
+        return false
+    elseif text:find("^%[Ошибка%] {ffffff}Чтобы запустить видеокарту в работу") then
+        work.on = false
+        lua_thread.create(function() wait(0) __closeWindow(true) end)
+    end
+end
+
+sampSendDialogResponsed = function(dialogId, button, list, text) 
+    json_timer = {true, json_timer[2], dialogId, button, list, text}
+end
+
+local function findCardIndexById(videocards, id)
+    for index, card in ipairs(videocards) do
+        if card[1] == id then
+            return index
+        end
+    end
+    return nil
+end
+function onWindowMessage(msg, wparam, lparam)
+    if not work.on and imgui_windows.dialog.v and not isPauseMenuActive() then
+        if msg == 0x101 or msg == 0x100 then 
+            if msg == 0x101 and wparam == 0x1B then
+                consumeWindowMessage(true, false)
+                __closeWindow(false)
+            elseif msg == 0x101 and wparam == 0x0D then
+                consumeWindowMessage(true, false)
+                sampSendDialogResponsed(__imDialogData.id, 1, __imDialogData.selectedVideocard)
+                imgui_windows.dialog.v = false
+            end
+            if msg == 0x100 and (wparam == 0x26 or wparam == 0x28) then
+                consumeWindowMessage(true, false)
+                if wparam == 0x26 then
+                    local currentIndex = findCardIndexById(__imDialogData.videocards, __imDialogData.selectedVideocard)
+                    if currentIndex then
+                        currentIndex = currentIndex - 1
+                        if currentIndex < 1 then
+                            currentIndex = #__imDialogData.videocards
+                        end
+                        __imDialogData.selectedVideocard = __imDialogData.videocards[currentIndex][1]
+                    end
+                elseif wparam == 0x28 then
+                    local currentIndex = findCardIndexById(__imDialogData.videocards, __imDialogData.selectedVideocard)
+                    if currentIndex then
+                        currentIndex = currentIndex + 1
+                        if currentIndex > #__imDialogData.videocards then
+                            currentIndex = 1
+                        end
+                        __imDialogData.selectedVideocard = __imDialogData.videocards[currentIndex][1]
+                    end
+                end               
+            end
+        end
+    end
 end
