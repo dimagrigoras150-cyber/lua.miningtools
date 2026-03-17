@@ -1,695 +1,1229 @@
-script_version('12.01.2023')
-script_author("Lucifer_Heaven (KitGov4e)") -- Тема blasthk www.blast.hk/threads/98943
-require "lib.moonloader"
-local hook = require 'samp.events'
-local inicfg = require "inicfg"
+script_name('AURA CORE SYSTEM v3.3 Beta')
+-- Подключение библиотек и кодировкаІ
+local imgui = require('mimgui')
+local encoding = require('encoding')
+local sampev = require("lib.samp.events")
+local vkeys = require('vkeys')
+encoding.default = 'CP1251'
+local u8 = encoding.UTF8
+-- ===== БАЗОВОЕ СОСТОЯНИЕ =====
+local showMenu = imgui.new.bool(false)
+local showControlCenter = imgui.new.bool(false)
+local showMonitoring = imgui.new.bool(false)
+local showSettings = imgui.new.bool(false)
+local pendingAutoScan = false
+local scanStepBusy = false
+local auraEnabled = true
+local waitingHouseReturn = false
+local refreshOneHouse = false
+local imgui_font = nil
+local collectDelay = imgui.new.int(180)
 
-local version = script.this.version
+local singleHouseRefresh = {
+    active = false,
+    house = 1
+}
 
-local miningtool = true -- Выключить главный код скрипта
-local automining_status = false
-local usefullfill = false
-local automining_getbtc = 0
-local automining_startall = 0
-local automining_fillall = 0
-local automining_fillall_ASC = 0
-local tablestatuscount = 0
-local tablefillcount = 0
+local btcCollector = {
+    active = false,
+    house = 1,
+    gpu = 1
+}
 
-local chosenhouse = 0
-local fillall_pressed = false -- Защита от повторного наполнения
+local gpuStarter = {
+    active = false,
+    house = 1
+}
 
-local oxladtime = 224 -- Часы, на сколько хватит охлада
+local globalBtcCollector = {
+    active = false,
+    house = 1
+}
 
-local MiningMainIni = inicfg.load({
-  dialogs =
-  {
-    FlashDialogID = 25182, -- ID Диалога главного (флешка)
-	MainDialogID = 25244, -- ID Диалога главного
-    CardDialogID = 25245, -- ID Диалога с действиями для видеокарты
-	CardConfirmID = 25246, -- ID Диалога с подтверждением для снятия битков
-	FillTypeID = 25271, -- ID Диалога с выбором типа жидкости
-	HouseChoseID = 7238, -- ID Диалога с выбором дома
-	MaxFill = 49, -- Уровень % охлада, выше которого скрипт заливать больше не будет
-	mtwait = 750, -- Время задержки в действиях (В мсек)
-	mtupd = true -- Функция автообновления диалога
-  }
-}, "MiningTool.ini")
+local btcStats = {
+    collected = 0
+}
 
-if not doesFileExist('moonloader/config/MiningTool.ini') then inicfg.save(MiningMainIni, 'MiningTool.ini') end -- Нет конфига = создать его
+local singleBtcStats = {
+    collected = 0
+}
 
-local INFO = { 
-    0.029999,
-    0.059999,
-    0.09,
-    0.11999,
-    0.15,
-    0.18,
-	0.209999,
-	0.239999,
-	0.27,
-	0.3
-} -- Прибыль в час по лвл (от 1 до 10)
+local scanner = {
+    active = false,
+    house = 1,
+    maxHouses = 15,
+    houseDialogId = nil,
+    gpuDialogId = nil,
+    waitingHouseDialog = false,
+    waitingGpuDialog = false,
+    lastAction = 0
+}
 
-local dtext = {} -- Таблица для текста всего главного диалога.
-local tablestatus = {} -- Таблица для ID строк работающих видеокарт, на которые надо нажать.
-local tablebtc = {} -- Таблица для ID строк видеокарт с 1+ BTC, на которые надо нажать.
-local tablefill = {} -- Таблица для ID строк видеокарт с уровнем охлада меньше, чем MaxFill и на которые надо нажать.
-local tablefill_ASC = {} -- Таблица для ID строк видеокарт типа ASC с уровнем охлада меньше, чем MaxFill и на которые надо нажать.
+local btcRate = 0
+local totalBTC = 0
+local maxHouses = 15
+local maxGpu = 20
+local selectedHouseTab = 1
+local selectedGpuCard = 1
+-- Данные по видеокартам: gpu_data[дом][карта]
+local gpu_data = {}
 
-local MainDialogID = MiningMainIni.dialogs.MainDialogID
-local CardDialogID = MiningMainIni.dialogs.CardDialogID
-local CardConfirmID = MiningMainIni.dialogs.CardConfirmID
-local FlashDialogID = MiningMainIni.dialogs.FlashDialogID
-local FillTypeID = MiningMainIni.dialogs.FillTypeID
-local HouseChoseID = MiningMainIni.dialogs.HouseChoseID
-local MaxFill = MiningMainIni.dialogs.MaxFill -- Выше этого порога заливать не будет.
-local mtwait = MiningMainIni.dialogs.mtwait -- Время задержки в действиях (В мсек).
-local mtupd = MiningMainIni.dialogs.mtupd -- Функция автообновления диалога
- 
+for h = 1, maxHouses do
+    gpu_data[h] = {}
+    for i = 1, maxGpu do
+        gpu_data[h][i] = {
+            status = u8"Нет данных",
+            btc = "0.000000",
+            level = "0",
+            temp = "0"
+        }
+    end
+end
+
+local manualOpen = {
+    active = false
+}
+
+-- ===== ДВИЖОК БОТА =====
+local bot = {
+    enabled = false,          -- включен ли бот
+    mode = "idle",            -- idle / one_house / all_houses / scan
+    state = "idle",           -- wait_house_list / wait_gpu_list / wait_gpu_menu
+    house = 1,                -- текущий дом
+    gpu = 1,                  -- текущая видеокарта
+    needLaunchPaused = false, -- потом пригодится
+    scanHouse = 1,            -- для глобального сканирования
+    isScanning = false
+}
+-- ===== СЛУЖЕБНЫЕ ФУНКЦИИ =====
+local function msg(text)
+    sampAddChatMessage("{FFD700}[AURA] {FFFFFF}" .. text, -1)
+end
+
+local function formatNumberDots(n)
+    local left, num, right = tostring(n):match('^([^%d]*%d)(%d*)(.-)$')
+    return left .. (num:reverse():gsub('(%d%d%d)', '%1.'):reverse()) .. right
+end
+
+local function refreshSelectedHouse()
+    if scanner.active or singleHouseRefresh.active then return end
+
+    singleHouseRefresh.active = true
+    singleHouseRefresh.house = selectedHouseTab
+
+    msg("Обновление дома #" .. singleHouseRefresh.house)
+
+    lua_thread.create(function()
+        wait(400)
+        sampProcessChatInput("/flashminer")
+    end)
+end
+
+local function resetScannerState()
+    scanner.active = false
+    scanner.house = 1
+    scanner.houseDialogId = nil
+    scanner.gpuDialogId = nil
+    scanner.waitingHouseDialog = false
+    scanner.waitingGpuDialog = false
+    scanner.lastAction = 0
+
+    bot.isScanning = false
+    bot.scanHouse = 1
+    manualOpen.active = false
+end
+
+local function resetBotProgress()
+    bot.house = selectedHouseTab
+    bot.gpu = 1
+    bot.state = "idle"
+end
+
+local function openAuraUiWithMonitoring()
+    showMenu[0] = true
+    showControlCenter[0] = false
+    showMonitoring[0] = true
+    imgui.ShowCursor = true
+end
+
+local function stopBot(reason)
+    bot.enabled = false
+    bot.mode = "idle"
+    bot.state = "idle"
+    if reason then
+        msg(reason)
+    end
+end
+
+local function startOneHouse()
+    bot.enabled = true
+    bot.mode = "one_house"
+    bot.house = selectedHouseTab
+    bot.gpu = 1
+    bot.state = "wait_house_list"
+    msg("Запуск сбора для дома #" .. bot.house)
+    sampProcessChatInput("/flashminer")
+end
+
+local function startAllHouses()
+    bot.enabled = true
+    bot.mode = "all_houses"
+    bot.house = 1
+    bot.gpu = 1
+    bot.state = "wait_house_list"
+    msg("Запуск сбора со всех домов")
+    sampProcessChatInput("/flashminer")
+end
+
+local scanCooldown = false
+
+local function startGlobalScan()
+    if scanner.active then return end
+
+    scanner.active = true
+    scanner.house = 1
+    scanner.houseDialogId = nil
+    scanner.gpuDialogId = nil
+    scanner.waitingHouseDialog = true
+    scanner.waitingGpuDialog = false
+    scanner.lastAction = os.clock()
+
+    bot.isScanning = true
+    bot.scanHouse = 1
+
+    openAuraUiWithMonitoring()
+    msg("Запуск синхронизации всех домов")
+
+    sampProcessChatInput("/flashminer")
+end
+
+function sendcef(str)
+    local bs = raknetNewBitStream()
+    raknetBitStreamWriteInt8(bs, 220)
+    raknetBitStreamWriteInt8(bs, 18)
+    raknetBitStreamWriteInt16(bs, #str)
+    raknetBitStreamWriteString(bs, str)
+    raknetBitStreamWriteInt32(bs, 0)
+    raknetSendBitStream(bs)
+    raknetDeleteBitStream(bs)
+end
+
 function main()
-	while not isSampAvailable() do wait(0) end
-		sampRegisterChatCommand("miningtool", function() -- Команда для перезапуска скрипта и загрузки конфига по новой.
-		    sampAddChatMessage('[MiningTool] {FFFFFF}Скрипт перезапущен! Конфиг перезагружен!', 0xFF6060)
-			thisScript():reload()
-		end)
-		sampRegisterChatCommand('mtwait', function(num)
-            if type(tonumber(num)) == 'number' and tonumber(num) > 99 and tonumber(num) < 5001 then
-			    num = tonumber(num)
-				mtwait = num
-				MiningMainIni.dialogs.mtwait = mtwait
-				if inicfg.save(MiningMainIni, 'MiningTool.ini') then
-					sampAddChatMessage('[MiningTool] {FFFFFF}Установлена задержка действий в {BEF781}'..mtwait..' мсек {FFFFFF}| По умолчанию - 500 мсек', 0xFF6060)
-				end				
-			else
-				sampAddChatMessage('[MiningTool] {FFFFFF}Ошибка! Используйте число от 100 до 5000 (Миллисекунд)', 0xFF6060)
-			end
-		end)
-		sampRegisterChatCommand('mtmaxfill', function(num)
-            if type(tonumber(num)) == 'number' and tonumber(num) > 0 and tonumber(num) < 100 then
-			    num = tonumber(num)
-				MaxFill = num
-				MiningMainIni.dialogs.MaxFill = MaxFill
-				if inicfg.save(MiningMainIni, 'MiningTool.ini') then
-					sampAddChatMessage('[MiningTool] {FFFFFF}Скрипт не будет заливать охлаждение, если в видеокарте его больше {BEF781}'..MaxFill..'%%%%', 0xFF6060)
-				end				
-			else
-				sampAddChatMessage('[MiningTool] {FFFFFF}Ошибка! Используйте число от 1 до 99', 0xFF6060)
-			end
-		end)
-		sampRegisterChatCommand('mtupd', function() 
-				mtupd = not mtupd
-				sampAddChatMessage(mtupd and '[MiningTool] Автообновление диалогов включено!' or '[MiningTool] Автообновление диалогов выключено!', 0xFF6060)
-				MiningMainIni.dialogs.mtupd = mtupd
-				inicfg.save(MiningMainIni, 'MiningTool.ini')		
-		end)		
-		
-		sampAddChatMessage('[MiningTool (От '..version..')] {FFFFFF}Готов к работе. ', 0xFF6060)
-	wait(-1)
-end
+    while not isSampAvailable() do
+        wait(500)
+    end
 
+    msg("Скрипт загружен. F2 - меню")
+	resetScannerState()
+    sampRegisterChatCommand("aura", function()
+		auraEnabled = not auraEnabled
 
+		resetScannerState()
 
-function hook.onShowDialog(dialogId, dialogStyle, dialogTitle, okButtonText, cancelButtonText, dialogText)
-    if miningtool then
-		if mtupd == true then
-		mtupd_text_paceholder = '[MiningTool] (/mtupd для отключения функции) {FFFFFF}Обнаружены изменения в ID диалога. Обновление...'
-			if dialogTitle:find('Выберите видеокарту') then
-				if dialogTitle:find('дом') then
-					if dialogId ~= FlashDialogID then
-						sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-						dialogupdate(5, dialogId)
-					end
-				else
-					if dialogId ~= MainDialogID then
-						sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-						dialogupdate(1, dialogId)
-					end
-				end
-			end
-			if dialogTitle:find('Стойка') and dialogTitle:find('Полка') then
-				if dialogId ~= CardDialogID then
-					sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-					dialogupdate(2, dialogId)
-				end
-			end	
-			if dialogTitle:find('Вывод прибыли видеокарты') then
-				if dialogId ~= CardConfirmID then
-					sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-					dialogupdate(3, dialogId)
-				end
-			end
-			if dialogTitle:find('Выберите тип жидкости') then
-				if dialogId ~= FillTypeID then
-					sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-					dialogupdate(4, dialogId)
-				end
-			end	
-			if dialogTitle:find('Выбор дома') then
-				if dialogId ~= HouseChoseID then
-					sampAddChatMessage(mtupd_text_paceholder, 0xFF6060)
-					dialogupdate(6, dialogId)
-				end
-			end			
+		if auraEnabled then
+			msg("Скрипт включен")
+		else
+			msg("Скрипт выключен")
 		end
+	end)
 
-	    if dialogId == MainDialogID or dialogId == FlashDialogID or dialogId == 0 and dialogTitle:find('Обзор всех видеокарт') or dialogTitle:find('Выберите видеокарту') then
-			local automining_btcoverall = 0
-			local automining_btcoverallph = 0
-			local automining_btcamountoverall = 0
-			local automining_videocards = 0
-			local automining_videocardswork = 0
-			-- ASC обявление переменных
-			local automining_ASCoverall = 0
-			local automining_ASCoverallph = 0
-			local automining_ASCamountoverall = 0
-			--
-			for line in dialogText:gmatch("[^\n]+") do
-                dtext[#dtext+1] = line			
+    while true do
+        wait(0)
+
+        if isKeyJustPressed(vkeys.VK_F2) then
+            showMenu[0] = not showMenu[0]
+
+            imgui.ShowCursor = showMenu[0] or showControlCenter[0] or showMonitoring[0]
+
+            if showMenu[0] then
+                lua_thread.create(function()
+                    wait(300)
+                    sampSendChat('/phone')
+                    wait(200)
+                    sendcef('launchedApp|39')
+                    wait(200)
+                    sampSendChat('/phone')
+                end)
             end
-			
-			if dtext[1]:find('%(коин%)') then
-			    dtext[1] = dtext[1]:gsub('%(коин%)', '%1 | До 9 | До 15 коинов')
+        end
+
+        -- ===== ОБРАБОТКА СКАНЕРА =====
+        if scanner.active then
+            -- если ждём окно выбора дома, но оно не пришло
+            if scanner.waitingHouseDialog and os.clock() - scanner.lastAction > 5 then
+                scanner.lastAction = os.clock()
+                sampProcessChatInput("/flashminer")
+            end
+        end
+    end
+end
+
+local function renderGradientText(text, speed)
+    local speed = speed or 2.0
+    local time = os.clock() * speed
+    local x_offset = 0
+    
+    for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        -- Рассчитываем волну для блика
+        local wave = math.sin(time - (x_offset * 0.1)) * 0.5 + 0.5
+        
+        -- Цвета: от насыщенного оранжевого до ярко-желтого
+        -- Это создаст эффект «бегущего блика» по золоту
+        local r = 1.0
+        local g = 0.5 + (wave * 0.4) -- Плавает от 0.5 до 0.9
+        local b = 0.0
+        
+        imgui.TextColored(imgui.ImVec4(r, g, b, 1.0), char)
+        imgui.SameLine(0, 0)
+        x_offset = x_offset + imgui.CalcTextSize(char).x
+    end
+    imgui.NewLine()
+end
+
+imgui.OnInitialize(function()
+    local config = imgui.ImFontConfig()
+    config.GlyphRanges = imgui.GetIO().Fonts:GetGlyphRangesCyrillic()
+    
+    local fontPath = getWorkingDirectory() .. '\\font\\agora.ttf' 
+    local solidPath = getWorkingDirectory() .. '\\font\\fa-solid-900.ttf' 
+    local brandPath = getWorkingDirectory() .. '\\font\\fa-brands-400.ttf' -- СКАЧАЙ ЭТОТ ФАЙЛ
+
+    if doesFileExist(fontPath) then
+        -- 1. Основной шрифт
+        imgui_font = imgui.GetIO().Fonts:AddFontFromFileTTF(fontPath, 18, config) 
+        
+        -- Конфиг для подмешивания
+        local iconConfig = imgui.ImFontConfig()
+        iconConfig.MergeMode = true
+        iconConfig.PixelSnapH = true
+        -- РАСШИРЕННЫЙ ДИАПАЗОН (чтобы видело всё)
+        local iconRanges = imgui.new.uint16_t[3]({0xf000, 0xffff, 0})
+
+        -- 2. Подмешиваем Solid (иконки системные)
+        if doesFileExist(solidPath) then
+            imgui.GetIO().Fonts:AddFontFromFileTTF(solidPath, 20, iconConfig, iconRanges)
+        end
+
+        -- 3. Подмешиваем Brands (Биткоин, Телеграм и т.д.)
+        if doesFileExist(brandPath) then
+            imgui.GetIO().Fonts:AddFontFromFileTTF(brandPath, 20, iconConfig, iconRanges)
+        end
+        
+        imgui.GetIO().Fonts:Build()
+    end
+end)
+
+imgui.OnFrame(function() return showMenu[0] end, function(player)
+    if imgui_font then imgui.PushFont(imgui_font) end
+
+    local currentHouse = bot.house
+    local currentStep = bot.gpu
+    local active = bot.enabled
+    local isScanning = bot.isScanning
+    local scanHouse = scanner.active and math.min(scanner.house, maxHouses) or bot.scanHouse
+
+    -- ===== ЕДИНЫЙ СТИЛЬ =====
+    local style = imgui.GetStyle()
+    style.WindowRounding, style.WindowBorderSize = 12.0, 1.5
+    style.WindowPadding = imgui.ImVec2(20, 20)
+
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.06, 0.06, 0.06, 0.96))
+    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(1.0, 0.7, 0.0, 0.5))
+    imgui.PushStyleColor(imgui.Col.TitleBg, imgui.ImVec4(0.1, 0.1, 0.1, 1.0))
+    imgui.PushStyleColor(imgui.Col.TitleBgActive, imgui.ImVec4(0.15, 0.15, 0.15, 1.0))
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.8, 0.0, 1.0))
+    imgui.PushStyleColor(imgui.Col.ResizeGrip, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ResizeGripHovered, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ResizeGripActive, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1.0, 0.7, 0.0, 0.2))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1.0, 0.7, 0.0, 0.4))
+
+    -- ===== ГЛАВНОЕ ОКНО =====
+    imgui.SetNextWindowPos(imgui.ImVec2(20, 350), imgui.Cond.FirstUseEver)
+    imgui.SetNextWindowSize(imgui.ImVec2(400, 0), imgui.Cond.Always)
+    imgui.Begin("AURA CORE SYSTEM", showMenu, imgui.WindowFlags.NoDecoration)
+
+        local startPos, winPos = imgui.GetCursorScreenPos(), imgui.GetWindowPos()
+        local winWidth, draw = imgui.GetWindowWidth(), imgui.GetWindowDrawList()
+        local color, radius = 0xCC00AAFF, 9
+
+        -- ИКОНКА КУРСА
+        local iX, iY = winPos.x + 350, winPos.y + 22
+        draw:AddCircle(imgui.ImVec2(iX, iY), radius, color, 20, 1.3)
+        imgui.SetCursorScreenPos(imgui.ImVec2(iX - 3, iY - 7))
+        imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 0.8), "i")
+        imgui.SetCursorScreenPos(imgui.ImVec2(iX - 10, iY - 10))
+        imgui.InvisibleButton("##info_btn", imgui.ImVec2(20, 20))
+        if imgui.IsItemHovered() then
+            imgui.BeginTooltip()
+                imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" ТЕКУЩИЙ КУРС:")
+                local drawT, pT, wT = imgui.GetWindowDrawList(), imgui.GetCursorScreenPos(), imgui.GetWindowWidth()
+                drawT:AddRectFilledMultiColor(
+                    imgui.ImVec2(pT.x, pT.y + 2),
+                    imgui.ImVec2(pT.x + wT - 10, pT.y + 4),
+                    0xFF00AAFF, 0x0000AAFF, 0x0000AAFF, 0xFF00AAFF
+                )
+                imgui.Dummy(imgui.ImVec2(0, 10))
+                imgui.Text(u8"Bitcoin: ")
+                imgui.SameLine()
+                imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), "$" .. tostring(btcRate))
+            imgui.EndTooltip()
+        end
+
+        -- ИКОНКА CONTROL CENTER
+        local bX, bY = winPos.x + 380, winPos.y + 22
+        draw:AddCircle(imgui.ImVec2(bX, bY), radius, color, 20, 1.3)
+        draw:AddLine(imgui.ImVec2(bX - 5, bY - 4), imgui.ImVec2(bX + 5, bY - 4), color, 1.5)
+        draw:AddLine(imgui.ImVec2(bX - 5, bY), imgui.ImVec2(bX + 5, bY), color, 1.5)
+        draw:AddLine(imgui.ImVec2(bX - 5, bY + 4), imgui.ImVec2(bX + 5, bY + 4), color, 1.5)
+        imgui.SetCursorScreenPos(imgui.ImVec2(bX - 10, bY - 10))
+        if imgui.InvisibleButton("##b_btn", imgui.ImVec2(20, 20)) then
+            showControlCenter[0] = not showControlCenter[0]
+            imgui.ShowCursor = showMenu[0] or showControlCenter[0] or showMonitoring[0]
+        end
+        if imgui.IsItemHovered() then
+            imgui.BeginTooltip()
+            imgui.Text(u8"Центр Управления")
+            imgui.EndTooltip()
+        end
+
+        -- КОНТЕНТ
+        imgui.SetCursorScreenPos(startPos)
+
+        local icon_bolt = " \239\131\167"
+        renderGradientText(icon_bolt .. u8"  AURA CORE SYSTEM", 2.0)
+
+        imgui.SameLine()
+        imgui.TextDisabled(" v3.3 Rebuild")
+
+        local p = imgui.GetCursorScreenPos()
+        draw:AddRectFilledMultiColor(
+            imgui.ImVec2(p.x, p.y + 5),
+            imgui.ImVec2(p.x + winWidth - 40, p.y + 7),
+            0xFF00AAFF, 0x0000AAFF, 0x0000AAFF, 0xFF00AAFF
+        )
+        imgui.Dummy(imgui.ImVec2(0, 15))
+
+        imgui.Text(u8"Статус: ")
+        imgui.SameLine()
+        if active then
+            imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.0, 1.0), "ACTIVE")
+        else
+            imgui.TextColored(imgui.ImVec4(1.0, 0.2, 0.2, 1.0), "STANDBY")
+        end
+
+        imgui.Spacing()
+        imgui.Text(u8(string.format("Дом: %d/%d | Карта: %d/%d", currentHouse, maxHouses, currentStep, maxGpu)))
+        imgui.Text(u8"Собрано за сессию: ")
+        imgui.SameLine()
+        imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), tostring(totalBTC) .. " BTC")
+
+        if btcRate > 0 then
+            imgui.Text(u8"Примерная прибыль: ")
+            imgui.SameLine()
+            imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), "$" .. math.floor(totalBTC * btcRate))
+        end
+
+        imgui.Dummy(imgui.ImVec2(0, 10))
+        imgui.Separator()
+        imgui.Spacing()
+
+        if active then
+            local statusText = u8("Обработка дома #" .. tostring(currentHouse) .. ", видеокарта #" .. tostring(currentStep))
+            imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), statusText)
+            local pB, wB, prg = imgui.GetCursorScreenPos(), winWidth - 40, (os.clock() % 2) / 2
+            draw:AddRectFilled(imgui.ImVec2(pB.x, pB.y + 2), imgui.ImVec2(pB.x + wB, pB.y + 4), 0x22FFFFFF)
+            draw:AddRectFilled(imgui.ImVec2(pB.x + (wB * prg), pB.y + 2), imgui.ImVec2(pB.x + (wB * prg) + 20, pB.y + 4), 0xFF00AAFF)
+            imgui.Dummy(imgui.ImVec2(0, 10))
+        else
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.4, 0.4, 0.4, 1.0))
+            imgui.Text(u8"Система в режиме ожидания")
+            imgui.PopStyleColor()
+        end
+
+    imgui.End()
+
+    -- ===== CONTROL CENTER =====
+    if showControlCenter[0] then
+        imgui.SetNextWindowSize(imgui.ImVec2(400, 300), imgui.Cond.FirstUseEver)
+        imgui.Begin(u8"   Mining Control Center", showControlCenter, imgui.WindowFlags.NoCollapse)
+
+            imgui.TextColored(imgui.ImVec4(1, 0.8, 0, 1), u8" ГЛАВНОЕ УПРАВЛЕНИЕ")
+            imgui.Separator()
+            imgui.Spacing()
+
+            if imgui.Button(u8"   " .. "\xef\x82\x80" .. u8"   MONITORING SYSTEM", imgui.ImVec2(-1, 45)) then
+                showMonitoring[0] = not showMonitoring[0]
+                imgui.ShowCursor = showMenu[0] or showControlCenter[0] or showMonitoring[0]
+            end
+			if imgui.Button(u8"⚙ SYSTEM SETTINGS", imgui.ImVec2(-1, 40)) then
+				showSettings[0] = true
+				showMonitoring[0] = false
 			end
-			
-			for d = 1, #dtext do
-				if dtext[d]:find('Полка%s+№%d+%s+|%s+%{BEF781%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+%d+%p%d+%%') then	-- Статус, работает или нет					
-					automining_status = 1
-					automining_statustext = '{BEF781}'
-				else
-					automining_status = 0
-					automining_statustext = '{F78181}'
+
+            imgui.Spacing()
+            imgui.TextDisabled(u8"Другие модули пока в разработке...")
+
+        imgui.End()
+    end
+
+    -- ===== МОНИТОРИНГ =====
+    if showMonitoring[0] then
+		imgui.SetNextWindowSize(imgui.ImVec2(1100, 650), imgui.Cond.Always)
+		imgui.Begin(
+			u8"AURA | Global Monitoring System",
+			showMonitoring,
+			imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize
+		)
+
+		local currentScanHouse = scanner and scanner.active and math.min(scanner.house, maxHouses) or bot.scanHouse
+
+		if isScanning then
+			local winSize = imgui.GetWindowSize()
+			imgui.SetCursorPos(imgui.ImVec2(winSize.x / 2 - 170, winSize.y / 2 - 45))
+			imgui.BeginGroup()
+				renderGradientText(u8"   СИНХРОНИЗАЦИЯ ДОМА #" .. currentScanHouse, 3.0)
+				imgui.Spacing()
+				imgui.ProgressBar(math.min(currentScanHouse, maxHouses) / maxHouses, imgui.ImVec2(340, 16), "")
+			imgui.EndGroup()
+		else
+			local houseData = gpu_data[selectedHouseTab] or {}
+
+			local activeCount = 0
+			local totalBtc = 0
+			local avgTemp = 0
+			local tempCount = 0
+
+			for i = 1, maxGpu do
+				local card = houseData[i]
+				if card then
+					if card.status == u8"Работает" then
+						activeCount = activeCount + 1
+					end
+
+					totalBtc = totalBtc + tonumber(card.btc or "0") or 0
+
+					local t = tonumber(card.temp or "0")
+					if t then
+						avgTemp = avgTemp + t
+						tempCount = tempCount + 1
+					end
 				end
-				local automining_lvl = tonumber(dtext[d]:match('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+(%d+)%s+уровень%s+%d+%p%d+%%')) -- Уровень видюхи
-				local automining_fillstatus = tonumber(dtext[d]:match('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%%')) -- Залито охлада в процентах
-                local automining_fillstatus_thisisASC = dtext[d]:find('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+ASC%s+%d+%s+уровень%s+%d+%p%d+%%') -- Это ASC карта
-				local automining_btcamount = tonumber(dtext[d]:match('Полка%s+№%d+%s+|%s+%{......%}%W+%s+(%d+%p%d+)%s+%a+%s+%d+%s+уровень%s+%d+%p%d+%%')) -- Число битков сейчас в видюхе              						
-					if automining_lvl ~= nil and automining_lvl ~= 0 and automining_fillstatus ~= nil and automining_btcamount ~= nil then					    												
-						automining_videocards = automining_videocards + 1
-						automining_btctimetofull = math.ceil((9 - automining_btcamount) / INFO[automining_lvl])
-						automining_btctimetofull_15 = math.ceil((15 - automining_btcamount) / INFO[automining_lvl])					
-						if automining_status == 1 then 
-							automining_videocardswork = automining_videocardswork + 1
-						elseif automining_status == 0 and automining_btcamount ~= 9 and automining_fillstatus > 0 then
-							idd = d - 2
-							tablestatus[#tablestatus+1] = idd
-						end
-						if automining_btcamount >= 1 then 
-							automining_btcamountinfo = true
-							idd2 = d - 2
-							tablebtc[#tablebtc+1] = idd2				
-						else 
-							automining_btcamountinfo = false 
-						end
-						
-						if automining_fillstatus_thisisASC ~= nil then
-							if automining_fillstatus < MaxFill then
-								idd3 = d - 2
-								tablefill_ASC[#tablefill_ASC+1] = idd3
-							end
-						elseif automining_fillstatus < MaxFill then
-							idd3 = d - 2
-							tablefill[#tablefill+1] = idd3
-						end
-						
-						if tablefill ~= nil then
-							tablefilltopress = tablefill[1]
-						else
-							tablefilltopress = nil
-						end
-						
-						if tablefill_ASC ~= nil then
-							tablefilltopress_ASC = tablefill_ASC[1]
-						else
-							tablefilltopress_ASC = nil
-						end
-						
-						if tablebtc ~= nil then
-							tablebtctopress = tablebtc[1]
-						else
-							tablebtctopress = nil
-						end
-						
-						if tablestatus ~= nil then
-							tablestatustopress = tablestatus[1]
-						else
-							tablestatustopress = nil
-						end					
-												
-						automining_fillstatushours = math.ceil(oxladtime * (automining_fillstatus / 100)) -- На сколько часов охлада
-						automining_fillstatusbtc = automining_fillstatushours * INFO[automining_lvl] -- Сколько видюха еще даст BTC
-												
-						if automining_fillstatus_thisisASC ~= nil then
-							automining_ASCamountoverall = automining_ASCamountoverall + math.floor(automining_btcamount) -- Подсчет сколько ASC доступно для снятия
-							automining_ASCoverall = automining_ASCoverall + automining_fillstatusbtc -- Подсчет сколько всего ASC дадут все видюхи
-						else
-							automining_btcamountoverall = automining_btcamountoverall + math.floor(automining_btcamount) -- Подсчет сколько доступно для снятия
-							automining_btcoverall = automining_btcoverall + automining_fillstatusbtc -- Подсчет сколько всего дадут все видюхи
-						end
-						
-						if automining_fillstatus > 0 and automining_status == 1 then
-							if automining_fillstatus_thisisASC ~= nil then
-								automining_ASCoverallph = automining_ASCoverallph + INFO[automining_lvl]
+			end
+
+			if tempCount > 0 then
+				avgTemp = avgTemp / tempCount
+			end
+
+			-- КНОПКА ОБНОВИТЬ
+			imgui.SetCursorPos(imgui.ImVec2(imgui.GetWindowWidth() - 50, 12))
+			if imgui.Button("\xef\x80\xa1", imgui.ImVec2(30, 30)) then
+				startGlobalScan()
+			end
+			if imgui.IsItemHovered() then
+				imgui.SetTooltip(u8"Обновить данные всех домов")
+			end
+
+			-- ЛЕВАЯ ПАНЕЛЬ ДОМОВ
+			imgui.BeginChild("##houses_panel", imgui.ImVec2(150, 0), true)
+				imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" ДОМА")
+				imgui.Separator()
+				imgui.Spacing()
+
+				for i = 1, maxHouses do
+					local isSelected = selectedHouseTab == i
+					if isSelected then
+						imgui.PushStyleColor(imgui.Col.Header, imgui.ImVec4(1.0, 0.7, 0.0, 0.25))
+						imgui.PushStyleColor(imgui.Col.HeaderHovered, imgui.ImVec4(1.0, 0.7, 0.0, 0.35))
+						imgui.PushStyleColor(imgui.Col.HeaderActive, imgui.ImVec4(1.0, 0.7, 0.0, 0.45))
+					end
+
+					if imgui.Selectable(u8(" Дом #" .. i), isSelected) then
+						selectedHouseTab = i
+						selectedGpuCard = 1
+					end
+
+					if isSelected then
+						imgui.PopStyleColor(3)
+					end
+				end
+			imgui.EndChild()
+
+			imgui.SameLine()
+
+			-- ПРАВАЯ ЧАСТЬ
+			imgui.BeginGroup()
+
+				-- ВЕРХНЯЯ СВОДКА
+				imgui.BeginChild("##summary_panel", imgui.ImVec2(0, 110), true, imgui.WindowFlags.NoScrollbar)
+					imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8(" ДОМ #" .. selectedHouseTab))
+					imgui.Separator()
+
+					imgui.Columns(3, nil, false)
+
+					imgui.Text(u8"Активно карт")
+					imgui.TextColored(imgui.ImVec4(0.0, 1.0, 0.5, 1.0), tostring(activeCount) .. "/" .. tostring(maxGpu))
+					imgui.NextColumn()
+
+					imgui.Text(u8"BTC всего")
+					imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), string.format("%.6f", totalBtc))
+					imgui.NextColumn()
+
+					imgui.Text(u8"Средняя жидкость")
+					imgui.TextColored(imgui.ImVec4(0.7, 0.9, 1.0, 1.0), string.format("%.1f %%", avgTemp))
+					imgui.NextColumn()
+
+					imgui.Columns(1)
+				imgui.EndChild()
+
+				imgui.Spacing()
+
+				-- ЦЕНТР: СПИСОК КАРТ + ДЕТАЛИ
+				imgui.BeginChild("##main_monitor_panel", imgui.ImVec2(0, -70), false)
+
+					-- СПИСОК ВИДЕОКАРТ СЛЕВА ВНУТРИ ПРАВОЙ ОБЛАСТИ
+					imgui.BeginChild("##gpu_list_panel", imgui.ImVec2(250, 0), true)
+						imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" ВИДЕОКАРТЫ")
+						imgui.Separator()
+						imgui.Spacing()
+
+						for i = 1, maxGpu do
+							local card = houseData[i]
+							local label = u8(" Видеокарта #" .. i)
+
+							if card and card.status == u8"Работает" then
+								label = label .. u8("  [ON]")
 							else
-								automining_btcoverallph = automining_btcoverallph + INFO[automining_lvl]
+								label = label .. u8("  [OFF]")
+							end
+
+							if imgui.Selectable(label, selectedGpuCard == i) then
+								selectedGpuCard = i
 							end
 						end
-						if dialogId ~= FlashDialogID then 
-							dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+'..automining_lvl..'%s+уровень', '%1 | '..automining_statustext..INFO[automining_lvl]..'/Час')
-						end
-						if automining_fillstatus > 0 then
-							if dialogId ~= FlashDialogID then 
-								dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+|%s+%{......%}%d+%p%d+/Час%s+'..automining_fillstatus..'%A+', '%1 '..tostring(automining_status and '{BEF781}' or '{F78181}')..'- [~'..automining_fillstatushours..'ч] {FFFFFF}|{81DAF5} [~'..string.format("%.1f", automining_fillstatusbtc)..' Coins]')
-						    else
-								dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+'..automining_fillstatus..'%A+', '%1 '..tostring(automining_status and '{BEF781}' or '{F78181}')..'- [~'..automining_fillstatushours..'ч]')
+					imgui.EndChild()
+
+					imgui.SameLine()
+
+					-- ДЕТАЛЬНАЯ ПАНЕЛЬ
+					imgui.BeginChild("##gpu_detail_panel", imgui.ImVec2(0, 0), true)
+
+						local card = houseData[selectedGpuCard] or {
+							status = u8"Нет данных",
+							btc = "0.000000",
+							level = "0",
+							temp = "0"
+						}
+
+						local isWorking = (card.status == u8"Работает")
+
+						imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8(" Видеокарта #" .. selectedGpuCard))
+						imgui.Separator()
+						imgui.Spacing()
+
+						-- БОЛЬШАЯ КАРТОЧКА
+						local p = imgui.GetCursorScreenPos()
+						local draw = imgui.GetWindowDrawList()
+						local panelW = imgui.GetContentRegionAvail().x
+						local panelH = 170
+
+						draw:AddRectFilled(p, imgui.ImVec2(p.x + panelW, p.y + panelH), 0x12FFFFFF, 10)
+						draw:AddRect(
+							p,
+							imgui.ImVec2(p.x + panelW, p.y + panelH),
+							isWorking and 0xAA00FF88 or 0xAA4444FF,
+							10,
+							15,
+							1.5
+						)
+
+						imgui.SetCursorScreenPos(imgui.ImVec2(p.x + 20, p.y + 18))
+						imgui.Text(u8"Статус:")
+						imgui.SameLine()
+						imgui.TextColored(
+							isWorking and imgui.ImVec4(0.0, 1.0, 0.5, 1.0) or imgui.ImVec4(1.0, 0.3, 0.2, 1.0),
+							tostring(card.status)
+						)
+
+						imgui.SetCursorScreenPos(imgui.ImVec2(p.x + 20, p.y + 52))
+						imgui.Text(u8"BTC:")
+						imgui.SameLine()
+						imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), tostring(card.btc))
+
+						imgui.SetCursorScreenPos(imgui.ImVec2(p.x + 20, p.y + 86))
+						imgui.Text(u8"Уровень:")
+						imgui.SameLine()
+						imgui.TextColored(imgui.ImVec4(0.8, 0.9, 1.0, 1.0), tostring(card.level))
+
+						imgui.SetCursorScreenPos(imgui.ImVec2(p.x + 20, p.y + 120))
+						imgui.Text(u8"Жидкость:")
+						imgui.SameLine()
+						imgui.TextColored(imgui.ImVec4(0.6, 0.9, 1.0, 1.0), tostring(card.temp) .. " %")
+
+						imgui.Dummy(imgui.ImVec2(panelW, panelH + 10))
+
+						-- МИНИ-СЕТКА КАРТ
+						imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), u8" БЫСТРЫЙ ОБЗОР")
+						imgui.Separator()
+						imgui.Spacing()
+
+						local cols = 4
+						local boxW = 115
+						local boxH = 52
+
+						for i = 1, maxGpu do
+							local c = houseData[i] or {}
+							local on = (c.status == u8"Работает")
+							local pp = imgui.GetCursorScreenPos()
+							local dd = imgui.GetWindowDrawList()
+
+							dd:AddRectFilled(pp, imgui.ImVec2(pp.x + boxW, pp.y + boxH), 0x10FFFFFF, 8)
+							dd:AddRect(
+								pp,
+								imgui.ImVec2(pp.x + boxW, pp.y + boxH),
+								on and 0xAA00FF88 or 0xAA4444FF,
+								8,
+								15,
+								selectedGpuCard == i and 2.0 or 1.0
+							)
+
+							imgui.SetCursorScreenPos(imgui.ImVec2(pp.x + 8, pp.y + 7))
+							imgui.TextColored(
+								on and imgui.ImVec4(0.0, 1.0, 0.5, 1.0) or imgui.ImVec4(1.0, 0.3, 0.2, 1.0),
+								on and "ON" or "OFF"
+							)
+
+							imgui.SameLine()
+							imgui.Text("#" .. i)
+
+							imgui.SetCursorScreenPos(imgui.ImVec2(pp.x + 8, pp.y + 28))
+							imgui.TextColored(imgui.ImVec4(1.0, 0.8, 0.0, 1.0), tostring(c.btc or "0.000000"))
+
+							imgui.SetCursorScreenPos(pp)
+							if imgui.InvisibleButton("gpu_box_" .. i, imgui.ImVec2(boxW, boxH)) then
+								selectedGpuCard = i
 							end
-						else
-						    if dialogId ~= FlashDialogID then
-								dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+|%s+%{......%}%d+%p%d+/Час%s+'..automining_fillstatus..'%A+', '%1 {F78181}(!)')
+
+							if i % cols ~= 0 then
+								imgui.SameLine(0, 10)
 							else
-								dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+'..automining_fillstatus..'%A+', '%1 {F78181}(!)')
+								imgui.Spacing()
 							end
 						end
-						
-						dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+', '%1 '..tostring(automining_btcamountinfo and '{BEF781}•' or '{F78181}•')..' {ffffff}| '..automining_statustext..'~'..automining_btctimetofull..'ч {ffffff}| '..automining_statustext..'~'..automining_btctimetofull_15..'ч')
+
+					imgui.EndChild()
+
+				imgui.EndChild()
+
+				-- НИЖНИЕ КНОПКИ
+				imgui.BeginChild("##bottom_buttons", imgui.ImVec2(0, 64), false)
+
+					local availW = imgui.GetContentRegionAvail().x
+					local spacing = 10
+					local btnW = (availW - spacing * 3) / 4
+					local btnH = 40
+
+					imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.10, 0.10, 0.95))
+					imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.14, 0.05, 0.95))
+					imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.25, 0.18, 0.06, 0.95))
+					imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(1.0, 0.75, 0.0, 0.65))
+
+					if imgui.Button(u8"СОБРАТЬ BTC", imgui.ImVec2(btnW, btnH)) then
+						singleBtcStats.collected = 0
+
+						btcCollector.active = true
+						btcCollector.house = selectedHouseTab
+						btcCollector.gpu = 1
+
+						sampProcessChatInput("/flashminer")
+					end
+					imgui.SameLine(0, spacing)
+
+					if imgui.Button(u8"ЗАПУСТИТЬ КАРТЫ", imgui.ImVec2(btnW, btnH)) then
+						gpuStarter.active = true
+						gpuStarter.house = selectedHouseTab
+						sampProcessChatInput("/flashminer")
+					end
+					imgui.SameLine(0, spacing)
+
+					if imgui.Button(u8"ОБНОВИТЬ ДОМ", imgui.ImVec2(btnW, btnH)) then
+						singleHouseRefresh.active = true
+						singleHouseRefresh.house = selectedHouseTab
+						sampProcessChatInput("/flashminer")
+					end
+					imgui.SameLine(0, spacing)
+
+					if imgui.Button(u8"ОБНОВИТЬ ВСЕ ДОМА", imgui.ImVec2(btnW, btnH)) then
+						startGlobalScan()
+					end
 					
-					elseif automining_lvl ~= nil and automining_lvl == 0 then
-						dtext[d] = dtext[d]:gsub('Полка%s+№%d+%s+|%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень', '%1 |{F78181} Ошибка!')
-					end				
-			end
-			
-		if dialogId == MainDialogID or dialogId == FlashDialogID then		
-			
-		    local automining_fillstatus1 = tonumber(dialogText:match('Полка №1 |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%A'))
-			local automining_fillstatus2 = tonumber(dialogText:match('Полка №2 |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%A'))
-			local automining_fillstatus3 = tonumber(dialogText:match('Полка №3 |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%A'))
-			local automining_fillstatus4 = tonumber(dialogText:match('Полка №4 |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%A'))
-			
-			local automining_getbtcstatus1 = tonumber(dialogText:match('Полка №1 |%s+%{......%}%W+%s+(%d+)%p%d+%s+%a+%s+%d+%s+уровень%s+%d+.'))
-			local automining_getbtcstatus2 = tonumber(dialogText:match('Полка №2 |%s+%{......%}%W+%s+(%d+)%p%d+%s+%a+%s+%d+%s+уровень%s+%d+.'))
-			local automining_getbtcstatus3 = tonumber(dialogText:match('Полка №3 |%s+%{......%}%W+%s+(%d+)%p%d+%s+%a+%s+%d+%s+уровень%s+%d+.'))
-			local automining_getbtcstatus4 = tonumber(dialogText:match('Полка №4 |%s+%{......%}%W+%s+(%d+)%p%d+%s+%a+%s+%d+%s+уровень%s+%d+.'))				
-			
-			for i = 1, 4 do
-			    local automining_lvl = tonumber(dialogText:match('Полка №'..i..' |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+(%d+)%s+уровень%s+%d+.'))
-				local automining_fillstatus = tonumber(dialogText:match('Полка №'..i..' |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+(%d+%p%d+)%A'))
-			    if automining_fillstatus ~= nil then
-					if automining_fillstatus > 0 and automining_lvl ~= nil then
-						automining_fillstatushours =  math.ceil(224 * (automining_fillstatus / 100))
-						dialogText = dialogText:gsub('Полка №'..i..' |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень%s+%d+%p%d+%A', '%1 {BEF781}- [~'..automining_fillstatushours..'ч]')	
-					end				
-					if automining_lvl > 0 then
-						dialogText = dialogText:gsub('Полка №'..i..' |%s+%{......%}%W+%s+%d+%p%d+%s+%a+%s+%d+%s+уровень', '%1 | '..INFO[automining_lvl]..'/Час')
-					end
-                end				
-			end					
-				
-			if automining_getbtc == 1 then
-			    if #tablebtc ~= 0 and tablebtc ~= nil then
-					for fg = 1, #tablebtc do
-					    if dialogId == MainDialogID or dialogId == FlashDialogID then
-							sampSendDialogResponse(dialogId,1,tablebtc[fg],nil)
-							break
-					    end				
-					end
-				else
-				    sampAddChatMessage('[MiningTool] {FFFFFF}Сбор завершен.', 0xFF6060)
-					automining_getbtc = 2 -- Выключить забор битков
-					thisScript():reload()
-				end
-			tablebtc = {}
-			end			
-			
-			if automining_startall == 1 then
-			    if #tablestatus ~= 0 and tablestatus ~= nil then
-					for f = 1, #tablestatus do					   
-					    if dialogId == MainDialogID or dialogId == FlashDialogID then
-							sampSendDialogResponse(dialogId,1,tablestatus[f],nil)
-							break
-					    end						
-					end
-				else
-				    sampAddChatMessage('[MiningTool] {FFFFFF}Запуск завершен.', 0xFF6060)
-					automining_startall = 2 -- Выключить старт всех
-					thisScript():reload()
-				end
-			tablestatus = {}
-			end
-			
-            if automining_fillall == 1 then
-				fillall_pressed = false
-				fillall_pressed2 = false
-			    if #tablefill ~= 0 and tablefill ~= nil then
-					for fl = 1, #tablefill do					   
-					    if dialogId == MainDialogID then
-							sampSendDialogResponse(dialogId,1,tablefill[fl],nil)
-							break
-					    end						
-					end
-				else
-				    sampAddChatMessage('[MiningTool] {FFFFFF}Заливка завершена.', 0xFF6060)
-					automining_fillall = 2 -- Выключить залив
-					thisScript():reload()
-				end
-			tablefill = {}
-			end
-            -- Заливка в Arizona Card
-            if automining_fillall_ASC == 1 then
-				fillall_pressed = false
-				fillall_pressed2 = false
-			    if #tablefill_ASC ~= 0 and tablefill_ASC ~= nil then
-					for fl = 1, #tablefill_ASC do					   
-					    if dialogId == MainDialogID then
-							sampSendDialogResponse(dialogId,1,tablefill_ASC[fl],nil)
-							break
-					    end						
-					end
-				else
-				    sampAddChatMessage('[MiningTool] {FFFFFF}Заливка завершена.', 0xFF6060)
-					automining_fillall_ASC = 2 -- Выключить залив
-					thisScript():reload()
-				end
-			tablefill_ASC = {}
-			end
-			--
-		end
-		
-		dialogText = table.concat(dtext,'\n')
-        dtext = {}
-		tablestatuscount = #tablestatus
-		tablefillcount = #tablefill
-		tablefillcount_ASC = #tablefill_ASC
-		tablestatus = {}
-		tablebtc = {}
-		tablefill = {}
-		tablefill_ASC = {}
-        dialogText = dialogText .. '\n' .. ' '
-		dialogText = dialogText .. '\n' .. '{ffff00}Информация\t{ffff00}Доступно снять\t{ffff00}Прибыль в час\t{ffff00}Прибыль прогнозируемая'
-		if dialogText:find('ASC') and dialogText:find('BTC') then
-		    dialogText = dialogText .. '\n' .. '{FFFFFF}Всего: '..automining_videocards..' | {BEF781}Работают '..automining_videocardswork..'\t{FFFFFF}'..string.format("%.0f", automining_btcamountoverall)..' BTC | {9966FF}'..string.format("%.0f", automining_ASCamountoverall)..' ASC\t{BEF781}'..automining_btcoverallph..' {FFFFFF}BTC | {BEF781}'..automining_ASCoverallph..' {9966FF}ASC\t{81DAF5}'..string.format("%.1f", automining_btcoverall)..' {FFFFFF}BTC | {81DAF5}'..string.format("%.1f", automining_ASCoverall)..' {9966FF}ASC'
-		elseif dialogText:find('BTC') then
-			dialogText = dialogText .. '\n' .. '{FFFFFF}Всего: '..automining_videocards..' | {BEF781}Работают '..automining_videocardswork..'\t{FFFFFF}'..string.format("%.0f", automining_btcamountoverall)..' BTC\t{BEF781}'..automining_btcoverallph..' {FFFFFF}BTC\t{81DAF5}'..string.format("%.1f", automining_btcoverall)..' {FFFFFF}BTC'
-		elseif dialogText:find('ASC') then
-			dialogText = dialogText .. '\n' .. '{FFFFFF}Всего: '..automining_videocards..' | {BEF781}Работают '..automining_videocardswork..'\t{9966FF}'..string.format("%.0f", automining_ASCamountoverall)..' ASC\t{BEF781}'..automining_ASCoverallph..' {9966FF}ASC\t{81DAF5}'..string.format("%.1f", automining_ASCoverall)..' {9966FF}ASC'
-		else
-			dialogText = dialogText .. '\n' .. ' '
-		end	
-			if dialogTitle:find('Выберите видеокарту') then	
-				if dialogText:find('Полка №1 | Свободна') and dialogText:find('Полка №2 | Свободна') and dialogText:find('Полка №3 | Свободна') and dialogText:find('Полка №4 | Свободна') and dialogId ~= FlashDialogID then
-					dialogText = dialogText .. '\n' .. ' '
-					dialogText = dialogText .. '\n' .. '{FF6060}- Забрать всю прибыль (Полки пусты!)'
-					dialogText = dialogText .. '\n' .. '{FF6060}- Запустить все видеокарты (Полки пусты!)'
-					if dialogId ~= FlashDialogID then
-						dialogText = dialogText .. '\n' .. '{FF6060}- Залить жидкость (Полки пусты!)'
-					end					
-				else
-					dialogText = dialogText .. '\n' .. ' '
-					if dialogText:find('ASC') and dialogText:find('BTC') then 
-						dialogText = dialogText .. '\n' .. '{99FF99}- Забрать всю прибыль\t{99FF99}'..string.format("%.0f", automining_btcamountoverall)..' BTC + {9966FF}'..string.format("%.0f", automining_ASCamountoverall)..' ASC'
-					elseif dialogText:find('BTC') then
-						dialogText = dialogText .. '\n' .. '{99FF99}- Забрать всю прибыль\t{99FF99}'..string.format("%.0f", automining_btcamountoverall)..' BTC'
-					elseif dialogText:find('ASC') then
-						dialogText = dialogText .. '\n' .. '{99FF99}- Забрать всю прибыль\t{9966FF}'..string.format("%.0f", automining_ASCamountoverall)..' ASC'
-					end
-					dialogText = dialogText .. '\n' .. '{22FF00}- Запустить все видеокарты\t{22FF00}'..tablestatuscount..' из '..automining_videocards..' Штук'
-					if dialogId ~= FlashDialogID then
-						if dialogText:find('BTC') then
-							dialogText = dialogText .. '\n' .. '{00FF55}- Залить жидкость (По 50%)\t{00FF55}В '..tablefillcount..' из '..automining_videocards..' Видеокарт'
-							dialogText = dialogText .. '\n' .. '{99FFFF}- Залить жидкость (По 100%)\t{99FFFF}В '..tablefillcount..' из '..automining_videocards..' Видеокарт'
-						else
-							dialogText = dialogText .. '\n' .. '{c0c0c0}- Залить жидкость (По 50%)\t{c0c0c0}Недоступно'
-							dialogText = dialogText .. '\n' .. '{c0c0c0}- Залить жидкость (По 100%)\t{c0c0c0}Недоступно'							
-						end
-						if dialogText:find('ASC') then
-							dialogText = dialogText .. '\n' .. '{9966FF}- Залить жидкость (Для Arizona Cards)\t{9966FF}В '..tablefillcount_ASC..' из '..automining_videocards..' Видеокарт'
-						end
-					end
-				end
-			end
-		automining_btcoverall = 0
-	    automining_btcoverallph = 0
-		automining_ASCoverall = 0
-	    automining_ASCoverallph = 0
-		tablestatuscount = 0
-		tablefillcount = 0	
-		return {dialogId, dialogStyle, dialogTitle, okButtonText, cancelButtonText, dialogText}
-		end
-		
-		if dialogId == CardDialogID then
-		
-		    if automining_getbtc == 1 then
-				if dialogText:find('Забрать прибыль') and dialogTitle:find('Стойка №%d+%s+') then
-				    local automining_btcamount = tonumber(dialogText:match('Забрать прибыль %((%d+).%d+ '))
-				    if automining_btcamount ~= 0 then
-						sampSendDialogResponse(CardDialogID,1,1,nil)							
-					else
-						lua_thread.create(function()
-							wait(mtwait)
-							sampSendDialogResponse(CardDialogID,0,0,nil)
-							return
-						end)
-					end
-				else
-				    sampSendDialogResponse(CardDialogID,0,0,nil)
-				end
-			end		    
-			
-			if automining_startall == 1 then
-				if dialogText:find('Запустить видеокарту') and dialogTitle:find('Стойка №%d+%s+') then
-				    lua_thread.create(function()
-					    wait(mtwait)
-						sampSendDialogResponse(CardDialogID,1,0,nil)
-						return
-					end)
-				else
-					sampSendDialogResponse(CardDialogID,0,0,nil)
-				end
-			end
+					if imgui.Button(u8"СОБРАТЬ BTC СО ВСЕХ", imgui.ImVec2(btnW, btnH)) then
+						btcStats.collected = 0
 
-		    if automining_fillall == 1 then
-				if dialogTitle:find('Стойка №%d+%s+| Полка №') and not fillall_pressed then
-					sampSendDialogResponse(CardDialogID,1,2,nil)
-					fillall_pressed = true
-				elseif fillall_pressed then
-				    sampSendDialogResponse(CardDialogID,0,0,nil)
-				end
-			end
-			
-			-- Заливка в Arizona Card
-		    if automining_fillall_ASC == 1 then
-				if dialogTitle:find('Стойка №%d+%s+| Полка №') and not fillall_pressed then
-					sampSendDialogResponse(CardDialogID,1,2,nil)
-					fillall_pressed = true
-				elseif fillall_pressed then
-				    sampSendDialogResponse(CardDialogID,0,0,nil)
-				end
-			end
-			--			
-	    end
-		
-	    if dialogId == CardConfirmID and dialogTitle:find('Вывод прибыли видеокарты') then
-     		if automining_getbtc == 1 then
+						globalBtcCollector.active = true
+						globalBtcCollector.house = 1
+
+						btcCollector.active = true
+						btcCollector.house = 1
+						btcCollector.gpu = 1
+
+						sampProcessChatInput("/flashminer")
+					end
+
+					imgui.PopStyleColor(4)
+
+				imgui.EndChild()
+
+			imgui.EndGroup()
+		end
+
+		imgui.End()
+
+	end
+	
+	if showSettings[0] then
+		imgui.Begin(u8"AURA | System Settings", showSettings)
+
+		imgui.Text(u8"Скорость операций")
+
+		imgui.SliderInt(u8"Скорость сбора BTC", collectDelay, 80, 400)
+
+		imgui.Separator()
+
+		imgui.Text(u8"Будущие настройки:")
+
+		imgui.BulletText(u8"Авто сбор BTC")
+		imgui.BulletText(u8"Авто запуск карт")
+		imgui.BulletText(u8"Авто охлаждение")
+
+		imgui.End()
+	end
+
+    imgui.PopStyleColor(11)
+    if imgui_font then imgui.PopFont() end
+end)
+
+function sampev.onShowDialog(id, style, title, button1, button2, text)
+    local cleanTitle = title:gsub('{......}', '')
+
+    if not auraEnabled then
+        return
+    end
+
+    -- ===== ТИХИЙ ПЕРЕХВАТ КУРСА =====
+    if cleanTitle:find("Курс валют") then
+        local rateVal = text:match("Bitcoin %(BTC%):%s+%$([%d]+)")
+        if rateVal then
+            btcRate = tonumber(rateVal)
+
+            lua_thread.create(function()
+                wait(200)
+                sampSendDialogResponse(id, 0, 0, "")
+            end)
+
+            return false
+        end
+    end
+
+    -- ===== ВЫБОР ДОМА =====
+	if cleanTitle == "Выбор дома"
+	and text:find("Номер дома")
+	and text:find("Город")
+	and text:find("Налог")
+	and text:find("Энергия") then
+		if scanner.active then
+			scanner.houseDialogId = id
+			scanner.waitingHouseDialog = false
+
+			if scanner.house <= scanner.maxHouses then
 				lua_thread.create(function()
-					wait(mtwait)
-					sampSendDialogResponse(CardConfirmID,1,nil,nil) -- Да
-				return false
+					wait(400)
+					sampSendDialogResponse(id, 1, scanner.house - 1, "")
+					scanner.waitingGpuDialog = true
+					scanner.lastAction = os.clock()
 				end)
+				return false
+			else
+				scanner.active = false
+				bot.isScanning = false
+				bot.scanHouse = 1
+				msg("Синхронизация завершена")
+				return false
 			end
-	    end			
-	    
-		if dialogId == FillTypeID then
-		    if automining_fillall == 1 then
-				if not fillall_pressed2 then
-					if usefullfill then
-						if dialogText:find('%{......%}Супер охлаждающая жидкость для видеокарты\t%{......%}%[ 0 %]') then
-							automining_fillall = 2
-							sampAddChatMessage('[MiningTool] {FFFFFF}У вас закончилась супер охлаждающая жидкость!', 0xFF6060)
+		end
+
+		if bot.enabled then
+			lua_thread.create(function()
+				wait(400)
+				local dialogIndex = bot.house - 1
+				sampSendDialogResponse(id, 1, dialogIndex, "")
+			end)
+			return false
+		end
+		
+		if btcCollector.active then
+			lua_thread.create(function()
+				wait(collectDelay[0])
+				sampSendDialogResponse(id, 1, btcCollector.house - 1, "")
+			end)
+			return false
+		end
+		
+		if globalBtcCollector.active then
+			btcCollector.active = true
+			btcCollector.house = globalBtcCollector.house
+			btcCollector.gpu = 1
+
+			lua_thread.create(function()
+				wait(collectDelay[0])
+				sampSendDialogResponse(id, 1, globalBtcCollector.house - 1, "")
+			end)
+			return false
+		end
+		
+		if gpuStarter.active then
+			lua_thread.create(function()
+				wait(400)
+				sampSendDialogResponse(id, 1, gpuStarter.house - 1, "")
+			end)
+			return false
+		end
+
+		if singleHouseRefresh.active then
+			manualOpen.active = false
+
+			lua_thread.create(function()
+				wait(400)
+				sampSendDialogResponse(id, 1, singleHouseRefresh.house - 1, "")
+			end)
+			return false
+		end
+		
+		manualOpen.active = true
+
+		lua_thread.create(function()
+			wait(300)
+			sampSendDialogResponse(id, 0, 0, "")
+			wait(600)
+			openAuraUiWithMonitoring()
+		end)
+
+		return false
+	end
+
+    -- ===== СПИСОК ВИДЕОКАРТ =====
+	if cleanTitle:find("Выберите видеокарту") then
+		local targetHouse
+
+		if scanner.active then
+			targetHouse = scanner.house
+		elseif bot.enabled then
+			targetHouse = bot.house
+		elseif singleHouseRefresh.active then
+			targetHouse = singleHouseRefresh.house
+		elseif manualOpen.active then
+			targetHouse = 1
+		else
+			targetHouse = selectedHouseTab
+		end
+
+		local cardIdx = 1
+
+		for line in text:gmatch("[^\r\n]+") do
+			if line:find("^Полка") then
+				local cleanLine = line:gsub("\t", " "):gsub("%s+", " ")
+
+				local isWorking = cleanLine:find("Работает") ~= nil
+				local btcValue = cleanLine:match("(%d+%.%d+)") or "0.000000"
+				local btcValueNum = tonumber(btcValue) or 0
+				local btcWhole = math.floor(btcValueNum)
+
+				if globalBtcCollector.active and btcWhole > 0 then
+					btcStats.collected = btcStats.collected + btcWhole
+				elseif btcCollector.active and not globalBtcCollector.active and btcWhole > 0 then
+					singleBtcStats.collected = singleBtcStats.collected + btcWhole
+				end
+
+				local cardLvl = cleanLine:match("(%d+)%s+уровень") or "0"
+				local cardTemp = cleanLine:match("(%d+%.%d+)%%") or "0"
+
+				if globalBtcCollector.active and btcValueNum > 0 then
+					btcStats.collected = btcStats.collected + btcValueNum
+				end
+				local cardLvl = cleanLine:match("(%d+)%s+уровень") or "0"
+				local cardTemp = cleanLine:match("(%d+%.%d+)%%") or "0"
+
+				if gpu_data[targetHouse] and gpu_data[targetHouse][cardIdx] then
+					gpu_data[targetHouse][cardIdx] = {
+						status = isWorking and u8"Работает" or u8"На паузе",
+						btc = btcValue,
+						level = cardLvl,
+						temp = cardTemp
+					}
+				end
+
+				cardIdx = cardIdx + 1
+			end
+		end
+
+		if scanner.active then
+			selectedHouseTab = scanner.house
+			bot.scanHouse = scanner.house
+
+			lua_thread.create(function()
+				wait(400)
+				sampSendDialogResponse(id, 0, 0, "")
+				wait(1000)
+
+				scanner.house = scanner.house + 1
+				scanner.waitingHouseDialog = true
+				scanner.waitingGpuDialog = false
+				scanner.lastAction = os.clock()
+			end)
+
+			return false
+		end
+
+		if bot.enabled and bot.mode == "one_house" then
+			selectedHouseTab = bot.house
+
+			lua_thread.create(function()
+				wait(300)
+				if bot.gpu <= maxGpu then
+					sampSendDialogResponse(id, 1, bot.gpu - 1, "")
+				else
+					stopBot("Дом #" .. bot.house .. " обработан")
+				end
+			end)
+
+			return false
+		end
+		
+		if btcCollector.active then
+			selectedHouseTab = btcCollector.house
+
+			local targetListboxId = nil
+			local listboxId = -1
+
+			for line in text:gmatch("[^\r\n]+") do
+				if line:find("^Полка") then
+					local amount = tonumber(line:match("([%d%.]+)%s*BTC")) or 0
+					if amount >= 1 and targetListboxId == nil then
+						targetListboxId = listboxId
+					end
+				end
+				listboxId = listboxId + 1
+			end
+
+			lua_thread.create(function()
+				wait(300)
+
+				if targetListboxId ~= nil then
+					sampSendDialogResponse(id, 1, targetListboxId, "")
+				else
+					btcCollector.active = false
+					btcCollector.gpu = 1
+
+					if globalBtcCollector.active then
+						globalBtcCollector.house = globalBtcCollector.house + 1
+
+						if globalBtcCollector.house <= maxHouses then
+							wait(700)
+							sampProcessChatInput("/flashminer")
 						else
-							lua_thread.create(function()
-							    fillall_pressed2 = true
-								wait(mtwait*2)
-								sampSendDialogResponse(FillTypeID,1,1,nil)
-							return false
-							end)
+							globalBtcCollector.active = false
+							globalBtcCollector.house = 1
+
+							local totalBTC = btcStats.collected
+							local totalMoney = math.floor(totalBTC * btcRate)
+
+							msg(string.format(
+								"{FFFFFF}[AURA] Глобальный сбор завершен | {FFD700}BTC: %d {FFFFFF}| По курсу: {00FF66}%s${FFFFFF}",
+								totalBTC,
+								formatNumberDots(totalMoney)
+							))
 						end
 					else
-						if dialogText:find('%{......%}Охлаждающая жидкость для видеокарты\t%{......%}%[ 0 %]') then
-							automining_fillall = 2
-							sampAddChatMessage('[MiningTool] {FFFFFF}У вас закончилась охлаждающая жидкость!', 0xFF6060)
-						else
-							lua_thread.create(function()
-							    fillall_pressed2 = true
-								wait(mtwait*2)
-								sampSendDialogResponse(FillTypeID,1,0,nil)
-							return false
-							end)
+						local totalBTC = singleBtcStats.collected
+						local totalMoney = math.floor(totalBTC * btcRate)
+
+						msg(string.format(
+							"{FFFFFF}[AURA] Дом #%d обработан | {FFD700}BTC: %d {FFFFFF}| По курсу: {00FF66}%s${FFFFFF}",
+							btcCollector.house,
+							totalBTC,
+							formatNumberDots(totalMoney)
+						))
+					end
+				end
+			end)
+
+			return false
+		end
+		
+		if gpuStarter.active then
+			selectedHouseTab = gpuStarter.house
+
+			local targetListboxId = nil
+			local listboxId = -1
+
+			for line in text:gmatch("[^\r\n]+") do
+				if line:find("^Полка") then
+					local isPaused = line:find("На паузе") ~= nil
+					local coolant = tonumber(line:match("([%d%.]+)%%")) or 0
+
+					if isPaused and coolant > 0 and targetListboxId == nil then
+						targetListboxId = listboxId
+					end
+				end
+				listboxId = listboxId + 1
+			end
+
+			lua_thread.create(function()
+				wait(300)
+
+				if targetListboxId ~= nil then
+					sampSendDialogResponse(id, 1, targetListboxId, "")
+				else
+					gpuStarter.active = false
+				end
+			end)
+
+			return false
+		end
+		
+		if singleHouseRefresh.active then
+			selectedHouseTab = singleHouseRefresh.house
+
+			lua_thread.create(function()
+				wait(300)
+				sampSendDialogResponse(id, 0, 0, "")
+			end)
+
+			singleHouseRefresh.active = false
+			manualOpen.active = false
+			return false
+		end
+		
+		if manualOpen.active then
+			selectedHouseTab = 1
+
+			lua_thread.create(function()
+				wait(200)
+				sampSendDialogResponse(id, 0, 0, "")
+			end)
+
+			manualOpen.active = false
+			return false
+		end
+
+		return
+	end
+	
+	-- ===== ПОДТВЕРЖДЕНИЕ ВЫВОДА ПРИБЫЛИ =====
+	if btcCollector.active and cleanTitle:find("Вывод прибыли видеокарты") then
+		lua_thread.create(function()
+			wait(250)
+			sampSendDialogResponse(id, 1, 0, "") -- "Вывод"
+		end)
+
+		return false
+	end
+
+    -- ===== МЕНЮ ОДНОЙ ВИДЕОКАРТЫ =====
+    if cleanTitle:find("Стойка") or text:find("видеокарту") then
+		
+		if btcCollector.active then
+			lua_thread.create(function()
+				wait(250)
+
+				local btnIdx = nil
+				local lineIndex = 0
+				local canWithdraw = false
+
+				for line in text:gmatch("[^\r\n]+") do
+					local cleanLine = line:gsub("{......}", "")
+
+					if cleanLine:find("Забрать прибыль") then
+						local amount = cleanLine:match("%(([%d%.]+)%s*BTC%)")
+						amount = tonumber(amount or "0")
+
+						if amount and amount >= 1 then
+							btnIdx = lineIndex
+							canWithdraw = true
 						end
+						break
 					end
-				else
-					sampSendDialogResponse(FillTypeID,0,1,nil)
+
+					lineIndex = lineIndex + 1
 				end
-			end
-				
-			if automining_fillall_ASC == 1 then
-				if not fillall_pressed2 then
-					if dialogText:find('%{......%}Охлаждающая жидкость для Arizona Video Card\t%{......%}%[ 0 %]') then
-						automining_fillall = 2
-						sampAddChatMessage('[MiningTool] {FFFFFF}У вас закончилась жидкость для Arizona Video Card!', 0xFF6060)
-					else
-						lua_thread.create(function()
-							fillall_pressed2 = true
-							wait(mtwait*2)
-							sampSendDialogResponse(FillTypeID,1,2,nil)
-						return false
-						end)
-					end
+
+				if canWithdraw and btnIdx ~= nil then
+					sampSendDialogResponse(id, 1, btnIdx, "")
 				else
-					sampSendDialogResponse(FillTypeID,0,2,nil)
+					sampSendDialogResponse(id, 0, 0, "") -- назад к списку
 				end
-			end			
+			end)
+
+			return false
 		end
-	end
+		
+		if gpuStarter.active then
+			lua_thread.create(function()
+				wait(250)
+
+				local btnIdx = nil
+				local lineIndex = 0
+
+				for line in text:gmatch("[^\r\n]+") do
+					local cleanLine = line:gsub("{......}", "")
+
+					if cleanLine:find("Запустить видеокарту") then
+						btnIdx = lineIndex
+						break
+					end
+
+					lineIndex = lineIndex + 1
+				end
+
+				if btnIdx ~= nil then
+					sampSendDialogResponse(id, 1, btnIdx, "")
+				else
+					sampSendDialogResponse(id, 0, 0, "")
+				end
+			end)
+
+			return false
+		end
+		
+        if bot.enabled and bot.mode == "one_house" then
+            lua_thread.create(function()
+                wait(250)
+
+                if text:find("Снять биткоины") then
+                    local btnIdx = 0
+                    if text:find("Улучшить") then
+                        btnIdx = 1
+                    end
+                    sampSendDialogResponse(id, 1, btnIdx, "")
+                else
+                    sampSendDialogResponse(id, 0, 0, "")
+                end
+
+                wait(collectDelay[0])
+                bot.gpu = bot.gpu + 1
+
+                if bot.gpu <= maxGpu then
+                    sampProcessChatInput("/flashminer")
+                else
+                    stopBot("Дом #" .. bot.house .. " обработан")
+                end
+            end)
+
+            return false
+        end
+    end
 end
 
-function hook.onSendDialogResponse(DialogId, DialogButton, DialogList, DialogInput)
-    if DialogId == MainDialogID and DialogList == 8 and DialogButton == 1 then
-	    automining_getbtc = 1
-		if tablebtctopress ~= nil then
-			sampSendDialogResponse(MainDialogID,1,tablebtctopress,nil)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Забираем прибыль... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-			automining_getbtc = 2
-			sampAddChatMessage('[MiningTool] {FFFFFF}Забирать больше нечего.', 0xFF6060)
-			sampSendDialogResponse(MainDialogID,0,0,nil)
-		end
-	elseif DialogId == MainDialogID and DialogList == 8 and DialogButton == 0 then
-	    sampSendDialogResponse(MainDialogID,0,0,nil)
-	end
-	
-	if DialogId == MainDialogID and DialogList == 9 and DialogButton == 1 then
-	    automining_startall = 1
-		if tablestatustopress ~= nil then
-			sampSendDialogResponse(MainDialogID,1,tablestatustopress,nil)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Запускаем все видеокарты... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-			automining_startall = 2
-			sampAddChatMessage('[MiningTool] {FFFFFF}Запускать больше нечего.', 0xFF6060)
-			sampSendDialogResponse(MainDialogID,0,0,nil)
-		end
-	elseif DialogId == MainDialogID and DialogList == 9 and DialogButton == 0 then
-	    sampSendDialogResponse(MainDialogID,0,0,nil)	
-	end
-	
-	if DialogId == MainDialogID and DialogList == 10 and DialogButton == 1 then
-		automining_fillall = 1
-		usefullfill = false
-		if tablefilltopress ~= nil then
-			sampSendDialogResponse(MainDialogID,1,tablefilltopress,nil)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливаем жидкость (По 50%)... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-		    automining_fillall = 2
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливать некуда или уровень охлаждения у всех выше {BEF781}'..MaxFill..'%%%%', 0xFF6060)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Настроить уровень {BEF781}MaxFill {FFFFFF}- /mtmaxfill [1-99]', 0xFF6060)
-			sampSendDialogResponse(MainDialogID,0,0,nil)
-		end
-	elseif DialogId == MainDialogID and DialogList == 10 and DialogButton == 0 then
-	    sampSendDialogResponse(MainDialogID,0,0,nil)
-	end	
-	
-	if DialogId == MainDialogID and DialogList == 11 and DialogButton == 1 then
-		automining_fillall = 1
-		usefullfill = true
-		if tablefilltopress ~= nil then
-			sampSendDialogResponse(MainDialogID,1,tablefilltopress,nil)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливаем жидкость (По 100%)... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-		    automining_fillall = 2
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливать некуда или уровень охлаждения у всех выше {BEF781}'..MaxFill..'%%%%', 0xFF6060)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Настроить уровень {BEF781}MaxFill {FFFFFF}- /mtmaxfill [1-99]', 0xFF6060)
-			sampSendDialogResponse(MainDialogID,0,0,nil)
-		end
-	elseif DialogId == MainDialogID and DialogList == 11 and DialogButton == 0 then
-	    sampSendDialogResponse(MainDialogID,0,0,nil)
-	end	
-	
-	if DialogId == MainDialogID and DialogList == 12 and DialogButton == 1 then -- Система для заливки ASC
-		automining_fillall_ASC = 1
-		if tablefilltopress_ASC ~= nil then
-			sampSendDialogResponse(MainDialogID,1,tablefilltopress_ASC,nil)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливаем жидкость для Arizona Video Card... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-		    automining_fillall_ASC = 2
-			sampAddChatMessage('[MiningTool] {FFFFFF}Заливать некуда или уровень охлаждения у всех выше {BEF781}'..MaxFill..'%%%%', 0xFF6060)
-			sampAddChatMessage('[MiningTool] {FFFFFF}Настроить уровень {BEF781}MaxFill {FFFFFF}- /mtmaxfill [1-99]', 0xFF6060)
-			sampSendDialogResponse(MainDialogID,0,0,nil)
-		end
-	elseif DialogId == MainDialogID and DialogList == 12 and DialogButton == 0 then
-	    sampSendDialogResponse(MainDialogID,0,0,nil)
-	end	
-	
-	--[Флешка]
-	if DialogId == FlashDialogID and DialogList == 33 and DialogButton == 1 then
-	    automining_getbtc = 1
-		if tablebtctopress ~= nil then
-			sampSendDialogResponse(FlashDialogID,1,tablebtctopress,nil)
-			sampAddChatMessage('[MiningTool: Флешка] {FFFFFF}Забираем прибыль... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-			automining_getbtc = 2
-			sampAddChatMessage('[MiningTool: Флешка] {FFFFFF}Забирать тут больше нечего.', 0xFF6060)
-			sampSendDialogResponse(FlashDialogID,0,0,nil)
-		end
-    elseif DialogId == FlashDialogID and DialogList == 33 and DialogButton == 0 then
-		sampSendDialogResponse(FlashDialogID,0,0,nil)
-	end
-	
-	if DialogId == FlashDialogID and DialogList == 34 and DialogButton == 1 then
-	    automining_startall = 1
-		if tablestatustopress ~= nil then
-			sampSendDialogResponse(FlashDialogID,1,tablestatustopress,nil)
-			sampAddChatMessage('[MiningTool: Флешка] {FFFFFF}Запускаем все видеокарты... Не открывайте другие диалоги во время этого!', 0xFF6060)
-		else
-			automining_startall = 2
-			sampAddChatMessage('[MiningTool: Флешка] {FFFFFF}Запускать тут больше нечего.', 0xFF6060)
-			sampSendDialogResponse(FlashDialogID,0,0,nil)
-		end				
-	elseif DialogId == FlashDialogID and DialogList == 34 and DialogButton == 0 then
-		sampSendDialogResponse(FlashDialogID,0,0,nil)
-	end
-	
-	if DialogId == HouseChoseID then
-		for i = 0, 20 do
-			if DialogList == i and DialogButton == 1 then
-				chosenhouse = i
-			end
-		end
-		if automining_startall == 1 or automining_getbtc == 1 then
-			sampSendDialogResponse(DialogId,chosenhouse,1,nil)
-		end
-	end
-end
 
-function dialogupdate (dialogId_configname, dialogId_new)
-	if dialogId_configname == 1 then
-		MiningMainIni.dialogs.MainDialogID = dialogId_new
-		dialogId_new_info = 'Основного'
-	elseif dialogId_configname == 2 then
-		MiningMainIni.dialogs.CardDialogID = dialogId_new
-		dialogId_new_info = 'Видеокарты'
-	elseif dialogId_configname == 3 then
-		MiningMainIni.dialogs.CardConfirmID = dialogId_new
-		dialogId_new_info = 'Подтверждения'
-	elseif dialogId_configname == 4 then
-		MiningMainIni.dialogs.FillTypeID = dialogId_new
-		dialogId_new_info = 'Выбора жидкости'
-	elseif dialogId_configname == 5 then
-		MiningMainIni.dialogs.FlashDialogID = dialogId_new
-		dialogId_new_info = 'Флешки'
-	elseif dialogId_configname == 6 then
-		MiningMainIni.dialogs.HouseChoseID = dialogId_new
-		dialogId_new_info = 'Выбора дома'		
-	end
-	if inicfg.save(MiningMainIni, 'MiningTool.ini') then
-		sampAddChatMessage('[MiningTool] {FFFFFF}ID Диалога {BEF781}'..dialogId_new_info..'{FFFFFF} обновлен. Новый ID = '..dialogId_new, 0xFF6060)
-		thisScript():reload()
-	end
-end
+
